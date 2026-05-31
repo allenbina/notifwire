@@ -1,14 +1,14 @@
-# NotifWire
+# notifwire
 
 **A self-hosted, peer-to-peer notification mesh for every device you own.**
 
-NotifWire captures native OS notifications from any device and delivers them
+notifwire captures native OS notifications from any device and delivers them
 natively to any other device — with full control over filtering, grouping,
 history, and encryption. No cloud. No subscriptions. No separate server to
 maintain: every install is a node.
 
-A companion project to Chatwire. Same philosophy, different data stream. Where
-Chatwire taps the iMessage database, NotifWire taps the live notification layer
+A companion project to chatwire. Same philosophy, different data stream. Where
+chatwire taps the iMessage database, notifwire taps the live notification layer
 across your entire device ecosystem.
 
 You host it yourself. That's the point.
