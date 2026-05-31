@@ -1,0 +1,15 @@
+# secrets — never commit real values
+.env
+*.env
+!.env.example
+
+# editor / OS cruft
+.DS_Store
+*.swp
+Thumbs.db
+
+# Rust / Tauri (for when code lands)
+/target
+**/target
+node_modules/
+dist/
