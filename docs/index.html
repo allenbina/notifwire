@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>notifwire — self-hosted notification mesh</title>
+  <meta name="description" content="Self-hosted, peer-to-peer notification mesh for every device you own. Your notifications, your devices, your rules.">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --bg-soft: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --accent: #58a6ff;
+      --accent-soft: #1f6feb;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .container { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+    header {
+      text-align: center;
+      padding: 80px 24px 60px;
+      border-bottom: 1px solid var(--border);
+    }
+    header img { width: 120px; margin-bottom: 24px; }
+    header h1 { font-size: 42px; font-weight: 700; margin-bottom: 12px; }
+    header p { font-size: 20px; color: var(--text-dim); max-width: 600px; margin: 0 auto 28px; }
+    .badge {
+      display: inline-block; padding: 4px 12px; border-radius: 999px;
+      background: var(--bg-soft); border: 1px solid var(--border);
+      color: var(--text-dim); font-size: 13px; margin-bottom: 24px;
+    }
+    .btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-block; padding: 12px 24px; border-radius: 8px;
+      font-weight: 600; text-decoration: none; transition: all 0.15s;
+    }
+    .btn-primary { background: var(--accent-soft); color: #fff; }
+    .btn-primary:hover { background: var(--accent); }
+    .btn-secondary { background: var(--bg-soft); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { border-color: var(--accent); }
+    section { padding: 60px 0; border-bottom: 1px solid var(--border); }
+    h2 { font-size: 28px; margin-bottom: 24px; }
+    .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 24px; }
+    .feature {
+      background: var(--bg-soft); border: 1px solid var(--border);
+      border-radius: 10px; padding: 24px;
+    }
+    .feature h3 { font-size: 18px; margin-bottom: 8px; }
+    .feature p { color: var(--text-dim); font-size: 15px; }
+    pre {
+      background: var(--bg-soft); border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px; overflow-x: auto; margin: 16px 0;
+    }
+    code { font-family: "SF Mono", Monaco, monospace; font-size: 14px; }
+    footer { text-align: center; padding: 40px 24px; color: var(--text-dim); font-size: 14px; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="assets/logo.png" alt="notifwire logo">
+    <h1>notifwire</h1>
+    <p>Self-hosted, peer-to-peer notification mesh for every device you own. Your notifications, your devices, your rules.</p>
+    <div class="btn-row">
+      <a href="https://github.com/allenbina/notifwire" class="btn btn-primary">View on GitHub</a>
+      <a href="why.md" class="btn btn-secondary">Why notifwire</a>
+    </div>
+  </header>
+
+  <div class="container">
+    <section>
+      <h2>What it does</h2>
+      <div class="features">
+        <div class="feature">
+          <h3>📡 Captures everywhere</h3>
+          <p>Native notifications from macOS, Windows, Linux, and Android — and iOS via Continuity.</p>
+        </div>
+        <div class="feature">
+          <h3>🕸️ No central server</h3>
+          <p>Every install is a node. Any always-on node is the hub. You own the whole pipeline.</p>
+        </div>
+        <div class="feature">
+          <h3>🔀 Routes anywhere</h3>
+          <p>Native delivery, plus HTTP webhook, MQTT, and Apprise's 100+ services.</p>
+        </div>
+        <div class="feature">
+          <h3>🔒 Private</h3>
+          <p>TLS everywhere, opt-in end-to-end encryption. No cloud, no third parties.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Free your phone-only alerts</h2>
+      <p style="color: var(--text-dim);">2FA codes, app-only push, bank and delivery alerts — the notifications that today only ever reach your phone. notifwire delivers them to whatever device you're actually using.</p>
+    </section>
+
+    <section style="border-bottom: none;">
+      <h2>Built for people who want control</h2>
+      <p style="color: var(--text-dim); margin-bottom: 16px;">notifwire is open source and self-hosted. No accounts, no telemetry, no lock-in. Currently in design stage — star the repo to follow along.</p>
+      <a href="https://github.com/allenbina/notifwire" class="btn btn-primary">Follow on GitHub</a>
+    </section>
+  </div>
+
+  <footer>
+    <p>notifwire · MIT licensed · built by <a href="https://github.com/allenbina">allenbina</a></p>
+    <p style="margin-top: 8px;"><a href="PHILOSOPHY.md">Philosophy</a> · <a href="FAQ.md">FAQ</a> · <a href="architecture.md">Architecture</a></p>
+  </footer>
+</body>
+</html>

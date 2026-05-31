@@ -1,14 +1,14 @@
-# NotifWire
+# notifwire
 
 **A self-hosted, peer-to-peer notification mesh for every device you own.**
 
-NotifWire captures native OS notifications from any device and delivers them
+notifwire captures native OS notifications from any device and delivers them
 natively to any other device — with full control over filtering, grouping,
 history, and encryption.  No cloud.  No subscriptions.  No server to maintain
 separately: every install is a node.
 
 A companion project to Chatwire.  Same philosophy, different data stream.
-Where Chatwire taps the iMessage database, NotifWire taps the live notification
+Where Chatwire taps the iMessage database, notifwire taps the live notification
 layer across your entire device ecosystem.
 
 You host it yourself.  That's the point.
@@ -17,17 +17,17 @@ You host it yourself.  That's the point.
 
 ## Core Concept
 
-There is no central server.  Every NotifWire install is a node.  A node can
+There is no central server.  Every notifwire install is a node.  A node can
 be a **producer** (capturing notifications from its host OS), a **consumer**
 (displaying incoming notifications natively), or both simultaneously.
 
-You install NotifWire on your Mac.  It becomes a node.  You install it on your
+You install notifwire on your Mac.  It becomes a node.  You install it on your
 Windows machine.  It becomes a node.  You pair both to the hub.  Notifications
 flow from every producer to every consumer automatically.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                        NotifWire Mesh                         │
+│                        notifwire Mesh                         │
 │                                                               │
 │   Mac Node          Android Node       Linux Node             │
 │  ┌──────────┐       ┌──────────┐      ┌──────────┐           │
@@ -62,14 +62,14 @@ with no port forwarding required.
 
 ### Producer
 A node that captures notifications from its host OS (or from producer plugins)
-and forwards them to the hub.  A Mac running NotifWire is a producer.  An
-Android phone running NotifWire is a producer.  A cron job calling
+and forwards them to the hub.  A Mac running notifwire is a producer.  An
+Android phone running notifwire is a producer.  A cron job calling
 `notifwire-send` on a Linux server is feeding a producer node.
 
 ### Consumer
 A node that receives notifications from the hub and displays them natively on
 its host OS, or forwards them to an external destination (MQTT, webhook,
-Apprise).  A Windows PC running NotifWire is a consumer.  A Linux desktop is
+Apprise).  A Windows PC running notifwire is a consumer.  A Linux desktop is
 a consumer.  MQTT is a consumer.  Apprise is a consumer.
 
 ### Hub
@@ -121,7 +121,7 @@ framework.  These are implemented as Tauri plugins:
 
 ## Notification Data Model
 
-Every notification in NotifWire is normalized to a common schema regardless
+Every notification in notifwire is normalized to a common schema regardless
 of origin — OS capture or producer plugin.  Fields beyond the lowest common
 denominator are carried as optional extras and rendered if the destination
 platform supports them.
@@ -156,7 +156,7 @@ platform supports them.
 ## Notification Styles by Platform
 
 Consumers always render using native OS APIs — no custom UI, no electron
-windows, no webviews.  NotifWire maps the normalized payload to whatever the
+windows, no webviews.  notifwire maps the normalized payload to whatever the
 destination OS supports.
 
 ### macOS
@@ -167,16 +167,16 @@ Title, subtitle, body, inline image.  Action buttons on Alerts only.
 ### iOS (via Continuity on Mac)
 iOS notifications mirror to a paired Mac automatically via Continuity — no
 same-network requirement, works over the internet.  All paired iPhones and
-iPads mirror simultaneously.  NotifWire sees these as macOS-sourced
+iPads mirror simultaneously.  notifwire sees these as macOS-sourced
 notifications with the iOS app name.  Which iOS device originated a
 notification (iPhone vs iPad) cannot be distinguished — this is a Continuity
-limitation, not a NotifWire one.
+limitation, not a notifwire one.
 
 ### Android
 Richest notification system of all platforms.  Heads-up banner, expandable
 shade (BigText, BigPicture, Inbox style), ongoing persistent notifications.
 Up to 3 action buttons, inline reply via RemoteInput.  Small icon (monochrome,
-24dp, required) plus optional large icon (64dp).  NotifWire captures via
+24dp, required) plus optional large icon (64dp).  notifwire captures via
 `NotificationListenerService`.
 
 ### Windows
@@ -248,7 +248,7 @@ Simple Icons (`simpleicons.org`) is the MVP of the icon system:
 - Vector format — infinitely scalable, zero resolution loss
 - MIT / CC licensed — safe to bundle and redistribute
 - No API key, no rate limit, no account
-- Ships bundled with NotifWire — works offline
+- Ships bundled with notifwire — works offline
 
 When `app_name` or `--icon` matches a Simple Icons slug (case-insensitive,
 fuzzy matched), the SVG is used and the resolution chain stops there.
@@ -257,15 +257,15 @@ fuzzy matched), the SVG is used and the resolution chain stops there.
 
 For apps not covered by Simple Icons, Clearbit serves brand logos by domain.
 Requires a user-supplied API key (free tier is generous for personal use).
-NotifWire ships a community-maintained `app_domains.json` mapping
+notifwire ships a community-maintained `app_domains.json` mapping
 (`"Coinbase" → "coinbase.com"`, `"Pinterest" → "pinterest.com"`, etc.) that
 grows with each release, so most lookups are automatic.
 
 ### API key management
 
 Keys are stored locally in the node config.  Never transmitted to other nodes
-or any service beyond their intended API call.  NotifWire never ships embedded
-keys and never proxies lookups through any NotifWire-operated service.
+or any service beyond their intended API call.  notifwire never ships embedded
+keys and never proxies lookups through any notifwire-operated service.
 
 Settings → API Keys:
 - Clearbit Logo API key
@@ -323,13 +323,13 @@ Forward to any of Apprise's 100+ supported notification services: Telegram,
 Discord, Slack, Pushover, ntfy, email, Signal, Matrix, and more.  One
 integration, the entire Apprise catalog.
 
-NotifWire is what Apprise has always needed on the receiving end.  Apprise
-sends notifications out to services.  NotifWire captures them from OS sources,
+notifwire is what Apprise has always needed on the receiving end.  Apprise
+sends notifications out to services.  notifwire captures them from OS sources,
 routes them, stores history, and uses Apprise as one of its output adapters.
 They complement each other perfectly.
 
 ### MCP Server
-Every NotifWire node exposes an MCP server.  Enables Claude and any other
+Every notifwire node exposes an MCP server.  Enables Claude and any other
 MCP client to query notification history, search by app or keyword, get
 recent notifications, and subscribe to live events.
 
@@ -353,11 +353,11 @@ GitHub-hosted community plugins (auto-update), and ZIP upload (no auto-update).
 A plugin is a **process**, not a library.  This is intentional:
 
 - No SDK required.  Any language that can make an HTTP POST works.
-- NotifWire core (Rust/Tauri) does not need the plugin's runtime installed.
+- notifwire core (Rust/Tauri) does not need the plugin's runtime installed.
 - The plugin POSTs normalized notification JSON to the local producer node's
   HTTP API (localhost:PORT).  The node handles dedup, filtering, routing,
   icon resolution — the plugin just sends the event.
-- The plugin process is started, stopped, and updated by NotifWire.
+- The plugin process is started, stopped, and updated by notifwire.
 
 ### Plugin manifest (`notifwire-plugin.json`)
 
@@ -377,15 +377,15 @@ A plugin is a **process**, not a library.  This is intentional:
 }
 ```
 
-NotifWire renders the `config_schema` as a settings UI automatically.  Plugin
-authors define fields; NotifWire handles the form.
+notifwire renders the `config_schema` as a settings UI automatically.  Plugin
+authors define fields; notifwire handles the form.
 
 ### Plugin tiers
 
-**Official** — maintained in the NotifWire org.  Bundled or one-click install.
+**Official** — maintained in the notifwire org.  Bundled or one-click install.
 Auto-update via GitHub releases.  Held to the same quality bar as core.
 
-**GitHub** — paste a GitHub repo URL.  NotifWire fetches the manifest, installs
+**GitHub** — paste a GitHub repo URL.  notifwire fetches the manifest, installs
 the correct binary for the current OS, and checks for updates on a configurable
 schedule.  Same trust model as Chatwire community plugins.
 
@@ -410,7 +410,7 @@ The first official producer plugin.
 
 ## `notifwire-send` CLI
 
-A small standalone binary, ships with every NotifWire install, lives in PATH.
+A small standalone binary, ships with every notifwire install, lives in PATH.
 Allows any script, cron job, CI pipeline, or scheduled task to inject a
 notification into the local producer node.  The node handles everything else.
 
@@ -467,13 +467,13 @@ icon via Simple Icons.
 # Send to a remote hub instead of localhost
 NOTIFWIRE_HOST=hub.allenbina.uk notifwire-send "Remote job done"
 
-# Timeout is fast (default 2s) — scripts never block on NotifWire
+# Timeout is fast (default 2s) — scripts never block on notifwire
 # Exit codes are meaningful — CI-friendly
 notifwire-send "Build failed" --priority urgent
 echo "Exit: $?"  # 0 success, 1 node unreachable, 2 invalid args
 ```
 
-NotifWire being unreachable never fails a script.  The binary exits cleanly
+notifwire being unreachable never fails a script.  The binary exits cleanly
 with a non-zero code and your pipeline continues.
 
 ### Windows / PowerShell
@@ -514,7 +514,7 @@ offline queue behavior.
 
 ### Deduplication
 Continuity sometimes fires the same notification on both iPhone and Mac.
-NotifWire fingerprints each notification (app + title + body) within a
+notifwire fingerprints each notification (app + title + body) within a
 configurable time window (default: 5 seconds) and drops duplicates.
 
 ### Scheduling / DND
@@ -537,7 +537,7 @@ When a consumer node is unreachable, behavior is configurable per consumer:
 
 Android nodes remain online even with the screen off — Android push
 infrastructure keeps them alive.  An old Android phone or tablet running
-NotifWire makes an ideal always-on relay node for a mesh where desktop
+notifwire makes an ideal always-on relay node for a mesh where desktop
 machines sleep.
 
 ---
@@ -609,7 +609,7 @@ or Linux.  No dedicated Windows client needed for any of them.
 ### Cross-device job completion
 Any script on any machine calls `notifwire-send` when a job finishes.  The
 notification routes to every consumer in the mesh.  Chain jobs across machines
-by combining with HTTP webhook or MQTT.  NotifWire is the signal layer.
+by combining with HTTP webhook or MQTT.  notifwire is the signal layer.
 
 ### RSS as a notification source
 Follow release feeds, status pages, blogs, or any RSS/Atom source.  New items
@@ -625,7 +625,7 @@ them on wake.  As a consumer node it receives notifications even at 3am.
 
 ## Relationship to Chatwire
 
-| | Chatwire | NotifWire |
+| | Chatwire | notifwire |
 |---|---|---|
 | Data source | `chat.db` (SQLite, persistent) | AXObserver + OS APIs (ephemeral) |
 | Scope | iMessage + SMS/MMS | All OS notifications + plugins |
@@ -635,7 +635,7 @@ them on wake.  As a consumer node it receives notifications even at 3am.
 | Plugin system | Yes | Yes — producer side |
 | iMessage handling | Yes, primary purpose | Excluded by default |
 
-Same deployment philosophy.  Different stack.  NotifWire blacklists the
+Same deployment philosophy.  Different stack.  notifwire blacklists the
 Messages app by default and defers entirely to Chatwire for iMessage and SMS.
 
 ---
@@ -643,13 +643,13 @@ Messages app by default and defers entirely to Chatwire for iMessage and SMS.
 ## Known Limitations
 
 - **iOS device disambiguation:** Continuity mirrors all paired iPhones and
-  iPads to the Mac simultaneously.  NotifWire cannot distinguish which iOS
+  iPads to the Mac simultaneously.  notifwire cannot distinguish which iOS
   device originated a notification — filtering is by app name only.  This is
   a Continuity limitation.
 - **Sleeping desktop nodes:** macOS, Windows, and Linux nodes do not forward
   notifications while the machine is asleep.  Android nodes remain active.
   This is an OS constraint.
-- **Notification actions:** One-directional only.  NotifWire forwards
+- **Notification actions:** One-directional only.  notifwire forwards
   notification content; it does not support responding to or acting on
   notifications remotely.  The round-trip timing across a network hop is not
   reliable enough to be useful.

@@ -2,7 +2,7 @@
 
 > This page is the "why" / "what for" of notifwire — the case for the product,
 > in plain language. It is the source material for the website's *Why* and
-> *What* pages. The full technical design lives in [SPEC.md](../SPEC.md).
+> *What* pages. The full technical design lives in [SPEC.md](SPEC.md).
 
 A notification today is something you *glance at* and forget. notifwire turns it
 into a **signal you can route, store, search, and act on** — across every device
@@ -91,4 +91,4 @@ for the *next* thing.
 - **Queryable.** Full searchable history, plus an MCP server so you can ask
   questions like "did my backup finish last night?"
 
-See [SPEC.md](../SPEC.md) for how all of this works under the hood.
+See [SPEC.md](SPEC.md) for how all of this works under the hood.

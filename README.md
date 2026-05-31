@@ -1,6 +1,20 @@
 # notifwire
 
-**A self-hosted, peer-to-peer notification mesh for every device you own.**
+<p align="center">
+  <img src="docs/assets/logo.png" alt="notifwire" width="200">
+</p>
+
+<p align="center">
+  <strong>Self-hosted, peer-to-peer notification mesh for every device you own.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/allenbina/notifwire/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://github.com/allenbina/notifwire/stargazers"><img src="https://img.shields.io/github/stars/allenbina/notifwire" alt="Stars"></a>
+  <a href="https://github.com/allenbina/notifwire/releases"><img src="https://img.shields.io/github/v/release/allenbina/notifwire" alt="Release"></a>
+</p>
+
+---
 
 notifwire captures native OS notifications from any device and delivers them
 natively to any other device — with full control over filtering, grouping,
@@ -11,33 +25,67 @@ A companion project to chatwire. Same philosophy, different data stream. Where
 chatwire taps the iMessage database, notifwire taps the live notification layer
 across your entire device ecosystem.
 
-You host it yourself. That's the point.
+## Why notifwire
 
-## Status
+Some of the most important alerts you get only ever appear on your phone — 2FA
+codes, app-only push, transaction alerts. If your phone is in the other room,
+you miss them. notifwire frees them, and turns every notification from a thing
+you glance at into a signal you can route, store, search, and act on.
 
-Early design stage. The full technical design lives in **[SPEC.md](SPEC.md)** —
-architecture, data model, per-platform notification handling, the icon
-resolution system, plugin contract, `notifwire-send` CLI, rules engine, and the
-v1→v3 roadmap.
+- **Mesh, not client/server** — every install is a node; any always-on node is the hub
+- **Native in, native out** — captured from real OS APIs, delivered as real OS notifications
+- **Routable** — also HTTP webhook, MQTT, and Apprise (100+ services)
+- **Queryable** — searchable history plus an MCP server
+- **Private** — TLS everywhere, opt-in end-to-end encryption, you host it yourself
 
-## At a glance
+Read the full case in **[docs/why.md](docs/why.md)**.
 
-- **Mesh, not client/server** — every install is a node; any always-on node can
-  act as the hub. Many producers → hub → many consumers.
-- **Native capture & delivery** — macOS (AXObserver), Windows (WinRT), Linux
-  (D-Bus), Android (`NotificationListenerService`); consumers render via native
-  OS notification APIs.
-- **Built on Tauri v2** — Rust backend, web UI, ~5–10MB binary, one codebase
-  across desktop + Android.
-- **Outputs beyond the OS** — MQTT, HTTP webhook, Apprise (100+ services), and
-  an MCP server for querying notification history.
-- **Self-hosted & private** — TLS everywhere, opt-in end-to-end encryption,
-  configurable retention.
+## Quick start
 
-See [SPEC.md](SPEC.md) for the complete design, or
-**[docs/why.md](docs/why.md)** for the case for notifwire — use cases and the
-phone-only alerts it sets free.
+> **Status: design stage.** The spec is published; v1 (macOS + Windows core) is
+> in development. ⭐ Star the repo to follow along.
+
+Once v1 ships, getting running will look like:
+
+```text
+1. Install notifwire on each device  (.dmg / .exe / AppImage)
+2. Designate one always-on node as the hub
+3. Pair your other devices to it
+4. Notifications flow from every producer to every consumer, automatically
+```
+
+See [docs/setup.md](docs/setup.md) for the full guide.
+
+## Documentation
+
+- [Setup guide](docs/setup.md)
+- [Architecture](docs/architecture.md)
+- [Plugin development](docs/plugins.md)
+- [Use cases / why](docs/why.md)
+- [Full spec](docs/SPEC.md)
+- [FAQ](docs/FAQ.md)
+- [Philosophy](docs/PHILOSOPHY.md)
+- [Changelog](docs/CHANGELOG.md)
+
+## Philosophy
+
+notifwire exists because your notifications are yours. They shouldn't be trapped
+on one device or routed through someone else's cloud. notifwire keeps them on
+hardware you control and lets you do whatever you want with them.
+
+Read the full [philosophy](docs/PHILOSOPHY.md).
+
+## Contributing
+
+Contributions welcome! See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and our
+[Code of Conduct](docs/CodeOfConduct.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Use it, fork it, make it yours.
+
+---
+
+<p align="center">
+  <sub>Built by <a href="https://github.com/allenbina">allenbina</a> · part of the <em>wire</em> family</sub>
+</p>
