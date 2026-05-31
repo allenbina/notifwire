@@ -34,7 +34,9 @@ v1→v3 roadmap.
 - **Self-hosted & private** — TLS everywhere, opt-in end-to-end encryption,
   configurable retention.
 
-See [SPEC.md](SPEC.md) for the complete design.
+See [SPEC.md](SPEC.md) for the complete design, or
+**[docs/why.md](docs/why.md)** for the case for notifwire — use cases and the
+phone-only alerts it sets free.
 
 ## License
 
