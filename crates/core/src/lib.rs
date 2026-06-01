@@ -7,11 +7,13 @@
 
 mod capture;
 mod config;
+mod dedup;
 mod notification;
 mod rules;
 
 pub use capture::{CaptureError, NotificationSource, SyntheticSource};
 pub use config::{Config, Freshness};
+pub use dedup::Deduper;
 pub use notification::{Notification, Priority, SourcePlatform};
 pub use rules::{DefaultMode, Filter, FilterAction, MatchField, Rules, Verdict};
 
