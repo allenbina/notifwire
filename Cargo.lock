@@ -2237,6 +2237,7 @@ dependencies = [
  "clap",
  "futures",
  "notifwire-cli",
+ "notifwire-consumer-win",
  "notifwire-core",
  "notifwire-transport",
  "rusqlite",
