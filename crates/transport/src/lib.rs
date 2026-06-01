@@ -11,11 +11,13 @@
 mod error;
 mod mesh;
 mod outbox;
+mod persist;
 mod sse;
 
 pub use error::TransportError;
 pub use mesh::{EventStream, MeshConsumer, MeshProducer};
 pub use outbox::{CatchUp, Cursor, Outbox, Sequenced};
+pub use persist::{load_outbox, save_outbox};
 pub use sse::{SseClient, SseProducer, SseServer};
 
 /// Crate version string.

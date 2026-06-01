@@ -25,6 +25,7 @@ use futures::{Stream, StreamExt};
 use notifwire_core::Notification;
 use serde::Deserialize;
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
@@ -35,6 +36,9 @@ const BROADCAST_CAPACITY: usize = 1024;
 struct ServerState {
     outbox: Arc<Mutex<Outbox>>,
     tx: broadcast::Sender<Sequenced>,
+    /// When set, the outbox is snapshotted here after every publish so it
+    /// survives a restart (D1-7).
+    persist_path: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -44,7 +48,19 @@ impl ServerState {
     fn publish(&self, notification: Notification) -> Cursor {
         let seq = {
             let mut ob = self.outbox.lock().expect("outbox mutex poisoned");
-            ob.append(notification.clone())
+            let seq = ob.append(notification.clone());
+            // Snapshot under the lock so what's on disk matches in-memory.
+            // Best-effort: a persistence failure (e.g. full disk) must not drop
+            // the live notification, so we warn and continue.
+            if let Some(path) = &self.persist_path {
+                if let Err(e) = crate::save_outbox(&ob, path) {
+                    eprintln!(
+                        "notifwire: failed to persist outbox to {}: {e}",
+                        path.display()
+                    );
+                }
+            }
+            seq
         };
         // No live subscribers is fine — the outbox still has it for catch-up.
         let _ = self.tx.send(Sequenced { seq, notification });
@@ -65,13 +81,31 @@ pub struct SseProducer {
 }
 
 impl SseServer {
-    /// Create a server whose outbox retains at most `capacity` recent events.
+    /// Create a server whose outbox retains at most `capacity` recent events,
+    /// held in memory only (lost on restart).
     pub fn new(capacity: usize) -> Self {
         let (tx, _rx) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
             state: ServerState {
                 outbox: Arc::new(Mutex::new(Outbox::new(capacity))),
                 tx,
+                persist_path: None,
+            },
+        }
+    }
+
+    /// Like [`new`](Self::new), but durable: the outbox is loaded from `path`
+    /// at startup and snapshotted back after every publish, so buffered
+    /// notifications and the monotonic cursor survive a restart (D1-7).
+    pub fn with_persistence(capacity: usize, path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let outbox = crate::load_outbox(&path, capacity);
+        let (tx, _rx) = broadcast::channel(BROADCAST_CAPACITY);
+        Self {
+            state: ServerState {
+                outbox: Arc::new(Mutex::new(outbox)),
+                tx,
+                persist_path: Some(path),
             },
         }
     }

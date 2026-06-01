@@ -35,8 +35,12 @@ pub struct CatchUp {
     pub gap: bool,
 }
 
-/// A bounded, in-memory, monotonically-sequenced ring of recent notifications.
-#[derive(Debug)]
+/// A bounded, monotonically-sequenced ring of recent notifications.
+///
+/// It is `Serialize`/`Deserialize` so it can be snapshotted to disk for
+/// durable catch-up across restarts (see [`crate::persist`]); the next
+/// sequence number is part of the snapshot, so cursors stay monotonic.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Outbox {
     capacity: usize,
     next_seq: Cursor,
@@ -64,6 +68,16 @@ impl Outbox {
             self.buf.pop_front();
         }
         seq
+    }
+
+    /// Re-apply a retention `capacity` (e.g. after loading a snapshot whose
+    /// configured capacity differs), trimming the oldest entries if needed.
+    /// Does not touch the sequence counter.
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity.max(1);
+        while self.buf.len() > self.capacity {
+            self.buf.pop_front();
+        }
     }
 
     /// The highest cursor assigned so far, or `0` if nothing has been appended.

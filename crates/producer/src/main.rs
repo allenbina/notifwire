@@ -16,6 +16,7 @@
 use anyhow::Result;
 use clap::Parser;
 use notifwire_transport::SseServer;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -33,18 +34,29 @@ struct Cli {
     /// Max notifications retained in the catch-up outbox.
     #[arg(long, default_value_t = 1000)]
     capacity: usize,
+
+    /// Persist the outbox to this file so buffered notifications and the
+    /// catch-up cursor survive a restart. Omit for in-memory only.
+    #[arg(long)]
+    persist: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let server = SseServer::new(cli.capacity);
+    let server = match &cli.persist {
+        Some(path) => SseServer::with_persistence(cli.capacity, path),
+        None => SseServer::new(cli.capacity),
+    };
     let (addr, serve) = server.bind(&cli.bind).await?;
 
     println!(
         "notifwire-producer listening on http://{addr} (outbox capacity {})",
         cli.capacity
     );
+    if let Some(path) = &cli.persist {
+        println!("  persisting outbox to {}", path.display());
+    }
     println!("  subscribe : GET  http://{addr}/events?since=<cursor>");
     println!("  ingest    : POST http://{addr}/ingest");
     println!("  e.g.      : notifwire-send \"hello\" --node http://{addr}");
