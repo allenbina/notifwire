@@ -8,10 +8,12 @@
 mod capture;
 mod config;
 mod notification;
+mod rules;
 
 pub use capture::{CaptureError, NotificationSource, SyntheticSource};
 pub use config::{Config, Freshness};
 pub use notification::{Notification, Priority, SourcePlatform};
+pub use rules::{DefaultMode, Filter, FilterAction, MatchField, Rules, Verdict};
 
 /// Crate version string, surfaced in handshakes and `--version` output.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
