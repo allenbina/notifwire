@@ -2199,6 +2199,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "notifwire-producer"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "notifwire-transport",
+ "tokio",
+]
+
+[[package]]
 name = "notifwire-transport"
 version = "0.0.0"
 dependencies = [
