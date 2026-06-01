@@ -4,11 +4,11 @@
 
 notifwire captures native OS notifications from any device and delivers them
 natively to any other device — with full control over filtering, grouping,
-history, and encryption.  No cloud.  No subscriptions.  No server to maintain
-separately: every install is a node.
+history, and encryption.  No cloud.  No subscriptions.  No central server.
+Every install is a node, and consumers talk to producers directly.
 
-A companion project to Chatwire.  Same philosophy, different data stream.
-Where Chatwire taps the iMessage database, notifwire taps the live notification
+A companion project to chatwire.  Same philosophy, different data stream.
+Where chatwire taps the iMessage database, notifwire taps the live notification
 layer across your entire device ecosystem.
 
 You host it yourself.  That's the point.
@@ -17,71 +17,89 @@ You host it yourself.  That's the point.
 
 ## Core Concept
 
-There is no central server.  Every notifwire install is a node.  A node can
-be a **producer** (capturing notifications from its host OS), a **consumer**
-(displaying incoming notifications natively), or both simultaneously.
+There is no central server and **no relay node**.  Every notifwire install is a
+node: a **producer** (capturing notifications from its host OS), a **consumer**
+(displaying incoming notifications natively or re-exporting them), or both
+simultaneously.
 
-You install notifwire on your Mac.  It becomes a node.  You install it on your
-Windows machine.  It becomes a node.  You pair both to the hub.  Notifications
-flow from every producer to every consumer automatically.
+Consumers connect **directly** to producers.  A consumer chooses which
+producers to subscribe to, authenticates to each, and receives their
+notification streams — filtered and routed per the consumer's own rules.  No
+node sits in the middle.  If a consumer is offline, the producer it subscribes
+to holds a short buffer (see Offline Behavior); nothing else in the mesh is
+affected.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                        notifwire Mesh                         │
-│                                                               │
-│   Mac Node          Android Node       Linux Node             │
-│  ┌──────────┐       ┌──────────┐      ┌──────────┐           │
-│  │ Producer │──┐ ┌──│ Producer │   ┌──│ Producer │           │
-│  │ Consumer │  │ │  └──────────┘   │  └──────────┘           │
-│  └──────────┘  │ │                 │                          │
-│                ▼ ▼                 ▼                          │
-│             ┌─────────────────────────┐                       │
-│             │          Hub            │                       │
-│             │  (any always-on node)   │                       │
-│             └────────────┬────────────┘                       │
-│               ┌──────────┼──────────┐                        │
-│               ▼          ▼          ▼                         │
-│         ┌──────────┐ ┌───────┐ ┌────────────┐                │
-│         │ Windows  │ │ MQTT  │ │  Apprise   │                │
-│         │ Consumer │ │ topic │ │ (100+ svcs)│                │
-│         └──────────┘ └───────┘ └────────────┘                │
-└──────────────────────────────────────────────────────────────┘
+        Producers                          Consumers
+   (capture & serve)                   (subscribe & display)
+
+  ┌──────────────┐                    ┌──────────────┐
+  │ Mac producer │◀───────────────────│ Windows      │  native display
+  └──────────────┘         ┌──────────│ consumer     │
+  ┌──────────────┐         │          └──────────────┘
+  │ Android      │◀────────┤          ┌──────────────┐
+  │ producer     │◀────────┼──────────│ Linux/Docker │──▶ MQTT
+  └──────────────┘         │          │ consumer     │──▶ Apprise
+  ┌──────────────┐         │          │ (headless,   │──▶ webhook
+  │ Linux        │◀────────┘          │  re-export)  │
+  │ producer     │                    └──────────────┘
+  └──────────────┘
+        ▲
+        │ localhost HTTP
+  ┌──────────────┐
+  │ input plugins│  RSS, notifwire-send, …
+  └──────────────┘
+
+  Arrows = a consumer subscribing directly to a producer.
+  No central relay.  Sinks (MQTT/Apprise/webhook) hang off a
+  consumer; nodes never relay to other nodes.
 ```
 
-**Many producers → hub → many consumers.**  A consumer subscribes to the hub
-and receives notifications from all producers at once, filtered and routed per
-your rules.  You do not wire consumers to producers directly.
+**Many producers, many consumers, direct connections.**  A consumer subscribes
+to the producers it cares about and receives their notifications at once,
+filtered and routed per its rules.  Consumers never subscribe to other
+consumers — there is no node-to-node relaying (see Roles).
 
-One node acts as the hub — typically your always-on machine or a lightweight
-VPS.  Others peer to it.  Cloudflare Tunnel or similar handles external access
-with no port forwarding required.
+**Reachability is the operator's choice, and notifwire stays out of it.**  A
+producer listens on an address and port; you reach it however you like — LAN
+IP, hostname, port-forward, Tailscale, or Cloudflare Tunnel.  No special
+topology, no port forwarding required unless you want it.
 
 ---
 
 ## Roles
 
 ### Producer
-A node that captures notifications from its host OS (or from producer plugins)
-and forwards them to the hub.  A Mac running notifwire is a producer.  An
-Android phone running notifwire is a producer.  A cron job calling
-`notifwire-send` on a Linux server is feeding a producer node.
+A node that captures notifications from its host OS (or from input plugins) and
+**serves** them to subscribed consumers.  It maintains the list of apps it has
+seen (apps are discovered, not declared — see Focuses) and a short outbox for
+catch-up.  A Mac running notifwire is a producer.  A cron job calling
+`notifwire-send` is feeding a producer node.
 
 ### Consumer
-A node that receives notifications from the hub and displays them natively on
-its host OS, or forwards them to an external destination (MQTT, webhook,
-Apprise).  A Windows PC running notifwire is a consumer.  A Linux desktop is
-a consumer.  MQTT is a consumer.  Apprise is a consumer.
+A node that subscribes to one or more producers and either displays
+notifications natively on its host OS **or** re-exports them to an external
+destination (MQTT, webhook, Apprise) via an output plugin.  A consumer holds
+its own configuration: filters, focuses, history, and optional E2E keys.  A
+Windows PC running notifwire is a consumer.  A headless Linux/Docker box
+re-exporting to MQTT is a consumer.
 
-### Hub
-The hub is not a special installation — it is any node designated as the
-central relay.  It aggregates from all producers, applies the rules engine,
-maintains history, and fans out to all consumers.  A node can be a producer,
-consumer, and hub simultaneously.
+### Always-on consumer (optional, not a special type)
+Any consumer deployed somewhere that never sleeps — typically a Linux/Docker
+box.  Useful as a persistent bridge to MQTT/Apprise/Home Assistant, or as a
+single subscription point for many producers.  **Nothing is forced through
+it**; if it's down, every other node still works directly.
+
+### No node-to-node relaying
+A notifwire consumer **always** subscribes to producers directly, **never** to
+another consumer.  Sinks fan out *outward* to non-notifwire systems (MQTT, HA,
+scripts); nodes never relay *inward* to peers.  This rule keeps an always-on
+consumer from quietly becoming a relay (routing tiers, cross-hop dedup, cursor
+ambiguity).
 
 ### A node can hold multiple roles
-Your Mac is typically producer + consumer + hub.  Your Windows PC is consumer
-only.  Your Android phone is producer + consumer.  Roles are configured per
-node in the web UI.
+Your Mac is typically producer + consumer.  Your Windows PC is consumer only.
+Your Android phone is producer + consumer.  Roles are configured per node.
 
 ---
 
@@ -98,7 +116,12 @@ Why Tauri:
 - Minimal memory footprint for a process running 24/7 on every device
 - First-class system tray and menubar support built in
 - Native notification sending via `tauri-plugin-notification`
-- Chatwire alignment — shared toolchain, shared knowledge
+- chatwire alignment — shared toolchain, shared knowledge
+
+Every node — producer, consumer, GUI or headless — runs the **same backend
+skeleton** (web UI + config server + sync client).  The only difference is that
+a headless node reads its config from JSON and does not serve the web settings
+UI.
 
 OS-specific notification capture requires native bridges regardless of
 framework.  These are implemented as Tauri plugins:
@@ -114,15 +137,60 @@ framework.  These are implemented as Tauri plugins:
 - macOS — `.dmg`, menubar app, Accessibility permission granted once in
   System Settings
 - Windows — installer or portable `.exe`, no admin required for basic use
-- Linux — AppImage (universal), also `.deb` / `.rpm`
+- Linux — AppImage (universal), also `.deb` / `.rpm`, **plus a headless Docker
+  image** for servers and output-plugin nodes (no GUI, JSON config)
 - Android — `.apk` sideload or Play Store (future)
+
+---
+
+## Transport & Connection
+
+The producer↔consumer mesh and the local ingest path are two distinct
+surfaces — don't conflate them.
+
+### Local ingest (inside one node)
+Input plugins and `notifwire-send` POST normalized notification JSON to the
+node's **localhost HTTP API** (`localhost:PORT`).  This is loopback, so
+plaintext is fine.  Simple request/response.
+
+### Mesh transport (producer ↔ consumer, across the network)
+- **Transport: Server-Sent Events (SSE) for v1**, sitting behind a small
+  `MeshTransport` interface so a WebSocket adapter (or anything else) can be
+  added later without touching the rest of the app.  SSE is plain HTTP: the
+  producer holds one long response open and writes each notification as a
+  `data:` line with an `id:` — and that `id` **is** the catch-up cursor (the
+  client's auto-reconnect resends it as `Last-Event-ID`).  Auth rides in the
+  connect request; the producer's app list is sent as the first event on the
+  stream.  Traverses proxies and CF Tunnel with no special config.
+- **Consumer dials the producer** (it's the subscriber).  The producer listens;
+  the operator routes reachability however they like.
+- A single connection handles **both** live push and catch-up replay (see
+  Offline Behavior).
+
+### Handshake / error codes
+Standard HTTP status codes, with a short machine-readable `code` in the JSON
+body only where the status alone is ambiguous:
+
+| Status | `code` | Meaning |
+|---|---|---|
+| 200 | — | connected, SSE stream opens |
+| 401 | `auth_required` | producer needs a password, none sent |
+| 401 | `auth_invalid` | wrong password |
+| 403 | `key_required` | E2E is on, consumer has no key configured |
+| 403 | `key_mismatch` | key / public key doesn't match, can't decrypt |
+| 426 | `version_unsupported` | protocol version mismatch |
+| 429 | `rate_limited` | optional, for internet-exposed producers |
+
+Body shape: `{ "code": "auth_invalid", "message": "wrong password" }` — `code`
+drives client logic, `message` is shown in the connect dialog.  This shares one
+error vocabulary with `notifwire-send`'s exit codes.
 
 ---
 
 ## Notification Data Model
 
 Every notification in notifwire is normalized to a common schema regardless
-of origin — OS capture or producer plugin.  Fields beyond the lowest common
+of origin — OS capture or input plugin.  Fields beyond the lowest common
 denominator are carried as optional extras and rendered if the destination
 platform supports them.
 
@@ -138,7 +206,7 @@ platform supports them.
 | `title` | string | Always present |
 | `body` | string | Always present |
 | `timestamp` | ISO 8601 | Captured at receive time |
-| `app_icon` | PNG, 48x48 | Normalized at hub — see Icon System |
+| `app_icon` | PNG, 48x48 | Normalized at the consumer — see Icon System |
 
 ### Extended fields (carried if available)
 
@@ -200,18 +268,19 @@ pixmap over D-Bus.  Icons 32–48px.
 
 ## Icon System
 
-Icons are resolved, normalized, cached, and self-improved by the hub.
-Plugin and script authors do not need to solve the icon problem — the hub
-handles it.
+Icons are resolved, normalized, cached, and self-improved by the **consumer**.
+Plugin and script authors do not need to solve the icon problem — the consumer
+handles it.  Producers send the best icon they happen to have; each consumer
+caches and upgrades from there.
 
 ### How the cache works
 
-The hub maintains an icon cache keyed by `app_name`, always storing the
+Each consumer maintains an icon cache keyed by `app_name`, always storing the
 highest-resolution version seen so far.  When a higher-resolution copy
 arrives (e.g. a macOS bundle icon at 512px arriving after an earlier Android
 capture at 64px), the cache entry upgrades automatically.  `icon_resolution`
-in the notification schema tells the hub whether to upgrade or keep what it
-has.
+in the notification schema tells the consumer whether to upgrade or keep what
+it has.
 
 All icons are normalized to **48x48px PNG** as the transit and storage format.
 SVGs from Simple Icons are rasterized at the highest useful resolution before
@@ -226,13 +295,13 @@ normalization.
 | Windows .ico | Up to 256px | Multi-resolution, good quality |
 | Android large icon | ~64dp | Acceptable, supplements well |
 | Linux .desktop | 32–48px | Lowest quality native source |
-| Plugin-provided URL | Variable | Hub fetches and caches |
+| Plugin-provided URL | Variable | Consumer fetches and caches |
 | Plugin manifest icon | 48–128px | Generic fallback for that plugin |
 
 ### Resolution chain (evaluated in order, stops at first hit)
 
 ```
-1. Hub icon cache       — best version seen from any source so far
+1. Consumer icon cache  — best version seen from any source so far
 2. Simple Icons         — vector SVG for ~3000 major brands, perfect at any size
 3. Clearbit Logo API    — user-supplied API key, domain-matched
 4. DuckDuckGo favicon   — no key required, ~32px, last resort
@@ -275,6 +344,11 @@ Settings → API Keys:
 
 ## Producers
 
+A producer captures notifications from its host OS and serves them to
+subscribed consumers over the mesh transport.  It keeps a discovered-apps list
+(sent to consumers on connect, refreshed as new apps appear) and a short
+outbox for catch-up.
+
 ### macOS producer
 - Captures all macOS notifications including iOS/iPadOS Continuity mirrors
 - Requires Accessibility permission — one-time grant in System Settings
@@ -289,7 +363,7 @@ Settings → API Keys:
 ### Linux producer
 - Listens on D-Bus `org.freedesktop.Notifications`
 - Works on GNOME and KDE Plasma; other DEs vary
-- Icon quality limited — hub icon lookup recommended
+- Icon quality limited — consumer icon lookup recommended
 
 ### Android producer
 - Captures via `NotificationListenerService`
@@ -306,27 +380,25 @@ Settings → API Keys:
 Notifications delivered via the host OS's native notification API.  Looks and
 behaves exactly like a local notification — because it is one.  No custom UI.
 
-### MQTT
-Publish notification payload as JSON to a configured broker topic.  Fan out
-to any number of MQTT subscribers simultaneously — n8n, Home Assistant,
-custom scripts, anything with a MQTT client.
+### Output plugins (re-export)
+External destinations are handled by **output plugins** — microservice
+processes, one per sink technology, each consuming normalized JSON from its
+consumer host and delivering it to a single sink.  Anyone can write one (see
+Plugins).  Official output plugins:
 
-Topic structure: `notifwire/{producer_node}/{app_name}`
-
-### HTTP Webhook
-POST notification payload as JSON to any URL.  Triggers n8n, IFTTT, Zapier,
-Home Assistant automations, or any custom endpoint.  Configurable per-app
-or global.
-
-### Apprise
-Forward to any of Apprise's 100+ supported notification services: Telegram,
-Discord, Slack, Pushover, ntfy, email, Signal, Matrix, and more.  One
-integration, the entire Apprise catalog.
+- **MQTT** (`mqtt-out`) — publish notification JSON to a broker topic; fan out
+  to n8n, Home Assistant, custom scripts, anything with a MQTT client.
+  Topic structure: `notifwire/{producer_node}/{app_name}`
+- **HTTP Webhook** (`http-out`) — POST JSON to any URL.  Triggers n8n, IFTTT,
+  Zapier, Home Assistant automations, or any custom endpoint.  Per-app or
+  global.
+- **Apprise** (`apprise-out`) — forward to any of Apprise's 100+ services:
+  Telegram, Discord, Slack, Pushover, ntfy, email, Signal, Matrix, and more.
+  One integration, the entire Apprise catalog.
 
 notifwire is what Apprise has always needed on the receiving end.  Apprise
 sends notifications out to services.  notifwire captures them from OS sources,
 routes them, stores history, and uses Apprise as one of its output adapters.
-They complement each other perfectly.
 
 ### MCP Server
 Every notifwire node exposes an MCP server.  Enables Claude and any other
@@ -342,22 +414,32 @@ Example queries:
 
 ---
 
-## Producer Plugins
+## Plugins
 
-Producer plugins extend the producer side with non-OS notification sources.
-They follow the same plugin architecture as Chatwire: official plugins,
-GitHub-hosted community plugins (auto-update), and ZIP upload (no auto-update).
+Plugins extend notifwire on both sides.  They follow the same architecture as
+chatwire: official plugins, GitHub-hosted community plugins (auto-update), and
+ZIP upload (no auto-update).
+
+- **Input plugins** (producer side) inject non-OS notification sources — RSS,
+  etc. — into a producer.
+- **Output plugins** (consumer side) re-export notifications to a single sink
+  technology — `mqtt-out`, `http-out`, `apprise-out`.
 
 ### Plugin contract
 
 A plugin is a **process**, not a library.  This is intentional:
 
-- No SDK required.  Any language that can make an HTTP POST works.
+- No SDK required.  Any language that can make an HTTP POST (input) or receive
+  one (output) works.
 - notifwire core (Rust/Tauri) does not need the plugin's runtime installed.
-- The plugin POSTs normalized notification JSON to the local producer node's
-  HTTP API (localhost:PORT).  The node handles dedup, filtering, routing,
-  icon resolution — the plugin just sends the event.
-- The plugin process is started, stopped, and updated by notifwire.
+- **Input:** the plugin POSTs normalized notification JSON to the local
+  producer node's HTTP API (`localhost:PORT`).  The node handles dedup,
+  filtering, routing, icon resolution — the plugin just sends the event.
+- **Output:** the plugin receives normalized JSON from its consumer host and
+  delivers it to its sink.  Typically packaged as one Docker container per sink
+  technology; can run headless (JSON config, no web UI).
+- The plugin process is started, stopped, and updated by notifwire (or, for
+  containerized output plugins, deployed by the operator).
 
 ### Plugin manifest (`notifwire-plugin.json`)
 
@@ -367,6 +449,7 @@ A plugin is a **process**, not a library.  This is intentional:
   "name": "RSS / Atom Feed Reader",
   "version": "1.0.0",
   "author": "notifwire",
+  "kind": "input",
   "entrypoint": {
     "macos": "bin/notifwire-rss-macos",
     "windows": "bin/notifwire-rss-windows.exe",
@@ -378,7 +461,8 @@ A plugin is a **process**, not a library.  This is intentional:
 ```
 
 notifwire renders the `config_schema` as a settings UI automatically.  Plugin
-authors define fields; notifwire handles the form.
+authors define fields; notifwire handles the form.  A plugin running headless
+reads the same fields from a JSON config instead of serving the form.
 
 ### Plugin tiers
 
@@ -387,14 +471,14 @@ Auto-update via GitHub releases.  Held to the same quality bar as core.
 
 **GitHub** — paste a GitHub repo URL.  notifwire fetches the manifest, installs
 the correct binary for the current OS, and checks for updates on a configurable
-schedule.  Same trust model as Chatwire community plugins.
+schedule.  Same trust model as chatwire community plugins.
 
 **ZIP upload** — drag in a zip containing the manifest and binaries.  No
 auto-update.  For private, internal, or offline plugins.
 
-### Official plugin: RSS / Atom (v1)
+### Official input plugin: RSS / Atom (v1 of the plugin)
 
-The first official producer plugin.
+The first official input plugin.
 
 - Multiple feed URLs, each independently configured
 - Poll interval per feed (or global default)
@@ -403,8 +487,8 @@ The first official producer plugin.
 - Priority per feed
 - Dedup by GUID — never re-notifies items already seen
 - Persists seen GUIDs locally across restarts
-- Feed-provided image or favicon used as icon source; falls through to hub
-  resolution chain
+- Feed-provided image or favicon used as icon source; falls through to the
+  consumer resolution chain
 
 ---
 
@@ -453,9 +537,9 @@ The `--icon` value is interpreted intelligently:
 |---|---|
 | Brand / app name | Fuzzy matched against Simple Icons slugs first, then Clearbit |
 | Domain | Favicon lookup via DuckDuckGo / Google |
-| URL | Hub fetches, caches, normalizes |
+| URL | Consumer fetches, caches, normalizes |
 | File path | Binary reads, base64 encodes, sends inline |
-| Omitted | Hub uses `--app` value as lookup key |
+| Omitted | Consumer uses `--app` value as lookup key |
 
 `--app` doubles as the icon lookup key when `--icon` is not specified.
 `--app "Coinbase"` with no `--icon` will automatically resolve the Coinbase
@@ -464,8 +548,8 @@ icon via Simple Icons.
 ### Environment and CI behavior
 
 ```bash
-# Send to a remote hub instead of localhost
-NOTIFWIRE_HOST=hub.allenbina.uk notifwire-send "Remote job done"
+# Send to a remote producer instead of localhost
+NOTIFWIRE_HOST=mac.allenbina.uk notifwire-send "Remote job done"
 
 # Timeout is fast (default 2s) — scripts never block on notifwire
 # Exit codes are meaningful — CI-friendly
@@ -491,14 +575,19 @@ Same binary, same flags, same behavior on every OS.
 
 ## Rules Engine
 
-Evaluated per notification at the hub, in order, before routing to consumers.
+Evaluated per notification at the **consumer**, in order, before display or
+re-export.  (Producers may also apply a coarse send-side filter so they never
+ship muted apps over the wire at all.)
 
 ### Filtering
 - **Whitelist mode** — forward only listed apps (recommended for low noise)
 - **Blacklist mode** — forward everything except listed apps
 - Per-app toggle
 - Keyword filters on title and/or body (include or exclude)
-- iMessage and SMS excluded by default — handled by Chatwire
+- The whitelist/blacklist default also governs **not-yet-seen apps**: in
+  blacklist mode a brand-new app flows through until muted; in whitelist mode
+  it's silent until allowed (see Focuses → App discovery)
+- iMessage and SMS excluded by default — handled by chatwire
 
 ### Priority levels
 Map any app or plugin to: Silent / Low / Normal / High / Urgent
@@ -515,7 +604,9 @@ offline queue behavior.
 ### Deduplication
 Continuity sometimes fires the same notification on both iPhone and Mac.
 notifwire fingerprints each notification (app + title + body) within a
-configurable time window (default: 5 seconds) and drops duplicates.
+configurable time window (default: 5 seconds) and drops duplicates.  For
+Continuity duplicates this happens on the **Mac producer**, where both copies
+originate.
 
 ### Scheduling / DND
 - Per-node DND windows (e.g. 22:00–07:00)
@@ -524,28 +615,183 @@ configurable time window (default: 5 seconds) and drops duplicates.
 
 ---
 
+## Settings, Focuses & UI
+
+### Producer settings
+
+**Network tab** — deliberately minimal:
+- **Listen on all interfaces** (toggle) — on = `0.0.0.0`; off = bind to
+  loopback / a specific interface for the lock-it-down crowd
+- **Port** — editable, with a sane default
+- **Public address** (optional) — `notifwire.domain.com` or an IP; the
+  advertised address handed out for pairing/connect.  Blank = consumers use
+  whatever they dialed.
+- **TLS** — `off (plaintext) · self-signed · own cert · upstream-terminated`;
+  see Encryption.  `off` is a legitimate selection, not a warning state.
+
+**Security tab** (separate from Network):
+- Password protection on the producer.  This is the whole producer-side
+  security surface for now.
+
+**Encryption** — a single checkbox, off by default (see Encryption).
+
+### Consumer settings (per consumer device)
+Each toggle is on/off **per consumer device**:
+- Show notification count.
+- Menubar-hover shows the active focus name — *or* show the focus name in the
+  menubar directly.
+- If possible, set the menubar icon to the icon chosen for the active focus.
+  *(Feasibility unknown — platform dependent.)*
+
+**Menubar click** → picker for: **Settings · Mute · Pick Focus**.
+
+**Import / Export** — all settings, so a config built on one device loads onto
+others.  The exported artifact is the **same JSON** a headless container reads
+(see Config Sync) — one schema, two ways to feed it.
+
+### Filters everywhere
+Filters appear at **both** the top level and the drill-down for each
+service / app / producer.
+
+### Focuses
+A "focus" is a named profile (think Apple Focus modes).  Each focus owns its
+own full tree of producers / apps / filters.
+
+Per-focus controls (next to each focus): **rename · change icon · add · copy ·
+remove · expand**
+- **Add** → a new focus with the **tree structure only** (producers / apps /
+  filter slots); settings start clean.  Same skeleton, fresh config.
+- **Copy** → a full duplicate of the focus **including its settings** (toggle
+  states, filter contents, per-producer config) — a true clone you then tweak.
+- **Switch schedule** — per focus, times to switch *to* and *from* it.
+- **Default** — the last focus in the list is the default, used when no focus
+  is actively picked.
+
+#### Focus tree structure
+
+```
+Focus: All
+├─ Filters for All (applies to every producer)
+└─ Producers
+   ├─ windows1   [edit · expand]
+   │  ├─ Filters for windows1
+   │  └─ Apps
+   │     ├─ app1   [✓ on/off · + add filter]
+   │     │  ├─ filter1   [remove]
+   │     │  └─ filter2   [remove]
+   │     └─ app2
+   │        └─ filters for app2   [remove]
+   ├─ ios1        [edit · expand]
+   └─ windows2    [edit · expand]
+Focus: focus2    [rename · change icon · add · copy · remove · expand]
+Focus: default   ← last = default when none selected
+```
+
+- **edit** per producer opens that producer's settings.  *(Popup menu vs.
+  separate tab — undecided.)*
+- Checkmark next to each app toggles it on/off; apps and filters can be added
+  or removed inline.
+
+#### App discovery
+There is no API that lists the apps installed on a producer — an app only
+becomes knowable when it fires its **first notification**.  So apps are
+**discovered, not declared**:
+- Each producer keeps the list of apps it has ever seen and sends it to
+  authenticated consumers (on connect, refreshed as new apps appear).
+- A newly discovered app appears as a new leaf in **all** focuses at once, in
+  each focus's default-mode state — so a new banking app is never silently
+  missing from a focus just because it first fired while another was active.
+- What happens to an app before you configure it is governed by the focus's
+  (or producer's) default whitelist/blacklist mode (see Rules Engine).
+
+---
+
+## Config Sync
+
+Config sync is a **shared module in the common backend skeleton** — GUI
+consumers and headless containers sync via the *same code*, so they never
+drift.  The only difference is the GUI also edits; the container only reads.
+
+- **`ConfigSource`** = where config lives: a mounted file/volume, a git repo, a
+  Dropbox folder, an HTTP(S) URL.  Pluggable behind an interface; ship the
+  **mounted-file/volume** source first, add git/Dropbox/HTTP later without
+  touching anything else.
+- **Sync client** pulls on a timer (+ on file-change), validates the JSON, and
+  **hot-reloads** with no restart.
+- **One writer, many pull-only readers** — containers are always pull-only and
+  never edit.  A GUI consumer may publish edits up to the source.  Keep it
+  **single-writer-by-convention for v1** (one device is the source of truth)
+  with the version stamp as the guardrail; true multi-editor merge is a later
+  problem.
+- **Version stamp lives inside the JSON** — the file is self-describing, so a
+  mounted file, a git blob, and a Dropbox copy each carry their own truth with
+  no external index:
+
+```json
+{
+  "config_version": 47,
+  "updated_at": "2026-05-31T18:04:00Z",
+  "updated_by": "allen-macbook",
+  "producers": [ ... ],
+  "focuses": [ ... ]
+}
+```
+
+The sync client compares `config_version` / `updated_at` and applies only what
+is newer — the same high-water-mark logic as the notification cursor, so a
+container that's been offline catches its config up the same way a consumer
+catches up notifications.
+
+### Container config
+- **One writable config file per container** (mqtt-out's broker creds,
+  http-out's URLs — per-deployment anyway).
+- A shared source of truth (producer list + focus tree) may be mounted
+  **read-only** into multiple containers.  Read-only = no contention; the trap
+  is multiple containers *writing* the same file, never multiple reading.
+- Bind-mount the JSON from the host; the container watches the file (or reloads
+  on SIGHUP) so edits apply without a restart.
+
+---
+
 ## Offline Behavior
 
-When a consumer node is unreachable, behavior is configurable per consumer:
+There is no central queue.  When a consumer is unreachable, the **producer**
+holds the buffer:
+
+- Each producer assigns a **monotonic sequence number** to its own stream
+  (producer-local — no global sequencer needed in a direct mesh).
+- Each consumer stores **one cursor per producer** (`windows1: last_seq 4417`,
+  `mac1: last_seq 982`, …).
+- On reconnect, the consumer presents its cursor and the producer **replays
+  everything after it from the outbox, then resumes live** — the same SSE
+  connection handles catch-up and live delivery.
+
+The outbox is **bounded by both time and size** (default: ~2h, also capped by
+count) so a chatty app can't blow up memory during a long outage.  Per-consumer
+policy on what to retain as the buffer ages:
 
 | Mode | Behavior |
 |---|---|
 | **Queue and deliver** | Hold all notifications, deliver in order on reconnect |
 | **Queue with summary** | Single summary on reconnect ("14 notifications while offline") |
-| **Urgent only** | Queue High/Urgent only, drop the rest |
+| **Urgent only** | As the time bound trims the queue, keep High/Urgent longer |
 | **Drop** | Discard while offline, no catchup |
+
+This is distinct from the on-device **ring buffer** (display history, below) —
+the outbox is the delivery queue, the ring buffer is local history.  Don't
+conflate them, or you'll re-deliver the whole ring buffer on every reconnect.
 
 Android nodes remain online even with the screen off — Android push
 infrastructure keeps them alive.  An old Android phone or tablet running
-notifwire makes an ideal always-on relay node for a mesh where desktop
-machines sleep.
+notifwire makes an ideal always-on producer for a mesh where desktop machines
+sleep.
 
 ---
 
 ## Battery Monitoring
 
 Each node monitors its own device battery and emits synthetic notifications
-to the mesh when configured thresholds are crossed.
+to its subscribers when configured thresholds are crossed.
 
 - Configurable threshold per node (default: 20%)
 - Emits as Normal priority by default, configurable up to Urgent
@@ -557,32 +803,73 @@ to the mesh when configured thresholds are crossed.
 
 ## History
 
-### Hub-side
-- Full log: app, title, body, producer node, source platform, plugin ID,
-  timestamp, delivery status per consumer
-- Searchable and filterable via web UI
+### Consumer-side
+- Full log of what the consumer received: app, title, body, producer node,
+  source platform, plugin ID, timestamp
+- Searchable and filterable via the consumer's web UI
 - Configurable retention per app or globally (default: 30 days or indefinite)
 - Export: JSON, CSV, plain text
 
-### On-device
+### On-device ring buffer
 - Each node maintains a local ring buffer (configurable, default: last 500)
 - Available offline
-- Syncs with hub on reconnect
+- This is **display history**, separate from the producer outbox (delivery
+  queue) and from full consumer-side history
 
 ---
 
 ## Encryption
 
-Notification content regularly includes sensitive material: 2FA codes,
-voicemail transcripts, bank alerts.  Encryption is a first-class feature.
+Encryption is **optional** and **off by default** — your data, your network,
+your choice.  notifwire never forces it and never refuses a plaintext
+connection.  Someone running laptop-to-laptop on their own LAN gets plaintext
+if they want it.
 
-- **Transit:** TLS mandatory everywhere.  No plaintext HTTP between nodes.
-- **End-to-end:** Payloads encrypted on the producer node, decrypted only on
-  consumer nodes.  Hub stores and routes ciphertext only in E2E mode.
-- **Key management:** Device keypairs generated locally on first run.  Public
-  keys exchanged during pairing.  Hub never sees plaintext in E2E mode.
-- E2E is opt-in but strongly recommended for any mesh handling 2FA or
-  financial notifications.
+### Transport encryption (operator's choice)
+Whether the wire is encrypted is up to the operator, and most real deployments
+get it for free without thinking about it:
+- **Tailscale / WireGuard** encrypts node-to-node at the network layer — run
+  plaintext inside the tunnel and it's already encrypted.  Zero certs.
+- **Cloudflare Tunnel** terminates real, auto-renewing TLS at the edge; the
+  producer runs plain HTTP behind it.  Zero certs.
+- **Reverse proxy (Caddy)** auto-provisions Let's Encrypt.  Zero certs.
+- **Raw direct exposure** is the only case that needs the producer's own cert —
+  and even then it can **auto-generate a self-signed cert with trust-on-first-
+  use at pairing** (like SSH's first-connect prompt), so it stays invisible.
+
+The producer TLS field — `off · self-signed · own cert · upstream-terminated` —
+includes an **upstream-terminated / trusted-transport** mode so notifwire
+doesn't refuse a plaintext connection when WireGuard or a proxy is already
+doing the encrypting.
+
+### End-to-end encryption (opt-in)
+For content that shouldn't be readable in transit regardless of transport —
+2FA codes, voicemail transcripts, bank alerts — notifwire offers **app-layer
+E2E** as a **single checkbox, off by default**.  When enabled, it expands inline
+to the key workflow: generate keys → show / copy / export the key → add it to
+the consumer.
+
+- Built on a **vetted crypto library — never hand-rolled**.  The leaning is
+  **`age`**: short, copy-pasteable keys, no certificate infrastructure, no CA,
+  no expiry, Rust-native.
+- **Public-key model preferred:** each consumer generates a keypair on first
+  run and shares only its **public** key; the producer encrypts *to* it; the
+  private (decryption) key never leaves the consumer.  Nothing secret travels.
+- A **symmetric pre-shared key** is the simpler alternative (one key copied to
+  both ends) if chosen — at the cost of the secret having to travel.
+- App-layer, so it's **independent of transport** — works over plaintext LAN,
+  Tailscale, or CF Tunnel alike.
+
+### Informing, not enforcing
+notifwire **informs, the operator decides.**
+- **Documentation** — a "Securing your mesh" guide lays out every option
+  (Tailscale / CF Tunnel / reverse proxy / own cert / plaintext / E2E) with
+  honest tradeoffs, including that plaintext means 2FA codes travel in the
+  clear.
+- **Warning** — a **one-time, dismissable** in-app notice when running plaintext
+  on a **non-loopback** bind (actually exposed, not just localhost).
+  Non-blocking; never nags after dismissal.  Makes the choice a choice, not an
+  accident.
 
 ---
 
@@ -600,7 +887,7 @@ Effective persistent call log across your entire mesh.
 ### 2FA codes
 Authenticator codes that appear in notification banners forwarded to your PC
 the moment they appear.  See the code without touching your phone.  Pairs well
-with short retention and E2E encryption.
+with short retention and opt-in E2E encryption.
 
 ### Finance and crypto alerts
 Coinbase, banking apps, brokerage notifications delivered natively to Windows
@@ -608,35 +895,36 @@ or Linux.  No dedicated Windows client needed for any of them.
 
 ### Cross-device job completion
 Any script on any machine calls `notifwire-send` when a job finishes.  The
-notification routes to every consumer in the mesh.  Chain jobs across machines
-by combining with HTTP webhook or MQTT.  notifwire is the signal layer.
+notification routes to every consumer subscribed to that producer.  Chain jobs
+across machines by combining with the HTTP webhook or MQTT output plugins.
+notifwire is the signal layer.
 
 ### RSS as a notification source
 Follow release feeds, status pages, blogs, or any RSS/Atom source.  New items
 arrive as native OS notifications on every consumer.  Keyword filtering keeps
 noise down.
 
-### Android as always-on relay
+### Android as always-on producer
 An Android device stays online while desktops sleep.  As a producer node it
-captures and queues notifications while desktop machines are off, forwarding
-them on wake.  As a consumer node it receives notifications even at 3am.
+captures and buffers notifications while desktop machines are off, serving
+them on reconnect.  As a consumer node it receives notifications even at 3am.
 
 ---
 
-## Relationship to Chatwire
+## Relationship to chatwire
 
-| | Chatwire | notifwire |
+| | chatwire | notifwire |
 |---|---|---|
 | Data source | `chat.db` (SQLite, persistent) | AXObserver + OS APIs (ephemeral) |
 | Scope | iMessage + SMS/MMS | All OS notifications + plugins |
-| Architecture | Mac producer + hub | Peer nodes, any OS |
+| Architecture | Mac producer | Direct peer nodes, any OS, no relay |
 | Platform | Python / pipx | Tauri v2 (Rust + web) |
 | History | Full, permanent | Configurable retention |
-| Plugin system | Yes | Yes — producer side |
+| Plugin system | Yes | Yes — input + output |
 | iMessage handling | Yes, primary purpose | Excluded by default |
 
 Same deployment philosophy.  Different stack.  notifwire blacklists the
-Messages app by default and defers entirely to Chatwire for iMessage and SMS.
+Messages app by default and defers entirely to chatwire for iMessage and SMS.
 
 ---
 
@@ -646,8 +934,8 @@ Messages app by default and defers entirely to Chatwire for iMessage and SMS.
   iPads to the Mac simultaneously.  notifwire cannot distinguish which iOS
   device originated a notification — filtering is by app name only.  This is
   a Continuity limitation.
-- **Sleeping desktop nodes:** macOS, Windows, and Linux nodes do not forward
-  notifications while the machine is asleep.  Android nodes remain active.
+- **Sleeping desktop nodes:** macOS, Windows, and Linux nodes do not capture or
+  serve notifications while the machine is asleep.  Android nodes remain active.
   This is an OS constraint.
 - **Notification actions:** One-directional only.  notifwire forwards
   notification content; it does not support responding to or acting on
@@ -655,7 +943,7 @@ Messages app by default and defers entirely to Chatwire for iMessage and SMS.
   reliable enough to be useful.
 - **AXObserver banner timing:** Banners that appear and dismiss in under ~1
   second (rare) may be missed.  Alert-style notifications are always captured.
-- **Linux icon quality:** Linux .desktop icons are typically 32–48px.  Hub
+- **Linux icon quality:** Linux .desktop icons are typically 32–48px.  Consumer
   icon lookup via Simple Icons or Clearbit is strongly recommended for Linux
   producer nodes.
 
@@ -663,11 +951,13 @@ Messages app by default and defers entirely to Chatwire for iMessage and SMS.
 
 ## Out of Scope
 
-- iMessage / SMS — Chatwire
+- iMessage / SMS — chatwire
 - Email notifications — use a real email client
 - GitHub notifications — email with more context, or the GitHub app
 - Social media — blacklisted by default in recommended config
 - Notification action responses / bidirectional control
+- **Node-to-node relaying / consumer chaining** — by design; sinks fan out,
+  nodes don't relay to peers
 - Enterprise integration (Kafka, Avro, etc.) — add your own HTTP middleware
 - Cloud hosting — you host it yourself, that's the point
 - Android TV / Fire TV — out of scope
@@ -679,32 +969,42 @@ Messages app by default and defers entirely to Chatwire for iMessage and SMS.
 ### v1 — macOS + Windows core
 - macOS producer (AXObserver, Tauri menubar)
 - Windows producer (WinRT notification capture, Tauri tray)
-- Node pairing and mesh protocol (WebSocket, TLS)
+- Direct consumer↔producer mesh: pairing, auth, **SSE transport** behind a
+  `MeshTransport` interface; standard HTTP handshake/error codes
 - Rules engine (whitelist/blacklist, priority, dedup, DND, grouping)
+- **Focuses** (per-focus trees, add vs. copy, switch schedule, default focus)
+- App discovery (producer-held seen-apps list)
 - History (SQLite, search, export JSON/CSV/TXT)
-- Web UI (settings, history, node management, plugin management)
-- Consumers: native OS display, HTTP webhook, Apprise
+- Web UI (settings, focuses, history, node management, plugin management) +
+  menubar agent
+- Consumers: native OS display
 - `notifwire-send` CLI binary (simple flags + JSON, all OSes)
 - Battery monitoring
-- Offline queue modes
+- Offline (producer outbox + per-producer cursor; queue modes)
 - Simple Icons bundled (offline icon resolution)
-- Hub icon cache with auto-upgrade
+- Consumer icon cache with auto-upgrade
+- Config import / export
 
-### v2 — Linux + Android + encryption + icon intelligence
+### v2 — Linux + Android + plugins + encryption + icon intelligence
 - Linux producer (D-Bus, AppImage + .deb/.rpm)
 - Android producer (NotificationListenerService, Kotlin/Tauri)
-- End-to-end encryption
-- MQTT consumer
+- **Headless Docker consumer image**
+- **Output plugins** (`mqtt-out`, `http-out`, `apprise-out`)
+- **Config sync** (`ConfigSource`: mounted file first, then git/Dropbox/HTTP;
+  version-stamped, single-writer/many-readers)
+- **Opt-in E2E encryption** (age, public-key preferred; expand-on-check UX)
 - MCP server
 - Clearbit Logo API integration (user-supplied key)
 - Favicon fallback chain
 - Settings → API Keys UI
-- RSS / Atom producer plugin (first official plugin)
+- RSS / Atom input plugin (first official plugin)
 - Plugin registry (GitHub install, ZIP upload, auto-update)
 - Community `app_domains.json` for Clearbit domain mapping
+- **WebSocket transport adapter** (alternative to SSE, behind the same
+  interface) — only if a real need appears
 
 ### v3 — Ecosystem
-- Android as always-on relay node (producer + hub mode)
+- Always-on consumer patterns (the optional always-on node)
 - Postgres history backend option
-- Community producer plugin ecosystem
+- Community plugin ecosystem (input + output)
 - Notification search API (for external tooling)

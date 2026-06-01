@@ -1,18 +1,25 @@
 # Plugin Development
 
-notifwire plugins add **producer** sources beyond the OS — RSS feeds, custom
-services, anything that can generate an event.
+notifwire plugins extend notifwire on both sides of the mesh — **input plugins**
+add non-OS notification sources to a producer (RSS feeds, custom services,
+anything that can generate an event), while **output plugins** deliver
+notifications from a consumer to an external sink.
 
 ## Plugin model
 
 A notifwire plugin is a **process, not a library**. This is intentional:
 
-- No SDK required. Any language that can make an HTTP POST works.
+- No SDK required. Any language that can make an HTTP POST (input) or receive
+  one (output) works.
 - notifwire core (Rust/Tauri) does not need the plugin's runtime installed.
-- The plugin POSTs normalized notification JSON to the local producer node's
-  HTTP API (`localhost:PORT`). The node handles dedup, filtering, routing, and
-  icon resolution — the plugin just sends the event.
-- notifwire starts, stops, and updates the plugin process for you.
+- **Input plugins** POST normalized notification JSON to the local producer
+  node's HTTP API (`localhost:PORT`). The node handles dedup, filtering,
+  routing, and icon resolution — the plugin just sends the event.
+- **Output plugins** receive normalized JSON from their consumer host and
+  deliver it to a single sink. Typically packaged as one Docker container per
+  sink technology; can run headless from a JSON config.
+- notifwire starts, stops, and updates the plugin process for you (or, for
+  containerized output plugins, the operator deploys them).
 
 ## Plugin tiers
 
@@ -25,9 +32,9 @@ notifwire supports three tiers of plugins:
 3. **Local (ZIP)** — drag in a zip with the manifest and binaries, no
    auto-update, for private/offline use
 
-## A minimal plugin
+## A minimal input plugin
 
-Send a notification by POSTing JSON to the local node. In any language:
+Send a notification by POSTing JSON to the local producer node. In any language:
 
 ```bash
 curl -s localhost:$NOTIFWIRE_PORT/api/notify -d '{
@@ -39,8 +46,8 @@ curl -s localhost:$NOTIFWIRE_PORT/api/notify -d '{
 }'
 ```
 
-The node normalizes the payload, resolves the `github` icon, applies your rules,
-and routes it to every consumer.
+The producer normalizes the payload, resolves the `github` icon, assigns a
+sequence number, and streams it to every subscribed consumer.
 
 ## The manifest
 
@@ -52,6 +59,7 @@ Every plugin needs a `notifwire-plugin.json` manifest:
   "name": "RSS / Atom Feed Reader",
   "version": "1.0.0",
   "author": "notifwire",
+  "kind": "input",
   "entrypoint": {
     "macos": "bin/notifwire-rss-macos",
     "windows": "bin/notifwire-rss-windows.exe",
@@ -62,22 +70,24 @@ Every plugin needs a `notifwire-plugin.json` manifest:
 }
 ```
 
-notifwire renders the `config_schema` as a settings UI automatically. Plugin
-authors define the fields; notifwire handles the form.
+The `kind` field is `"input"` for producer-side plugins and `"output"` for
+consumer-side sink plugins. notifwire renders the `config_schema` as a settings
+UI automatically. Plugin authors define the fields; notifwire handles the form.
+A plugin running headless reads the same fields from a JSON config file.
 
 ## Icons
 
 You don't need to solve the icon problem. Set `app_name` (or send an `icon`
-hint — a brand name, domain, URL, or file path) and the hub's icon cache and
-resolution chain take it from there. See the Icon System in the
+hint — a brand name, domain, URL, or file path) and each consumer's icon cache
+and resolution chain take it from there. See the Icon System in the
 [full spec](SPEC.md).
 
-## Official plugin: RSS / Atom
+## Official input plugin: RSS / Atom
 
-The first official producer plugin polls RSS/Atom feeds and emits new items as
+The first official input plugin polls RSS/Atom feeds and emits new items as
 notifications — multiple feeds, per-feed poll interval, keyword filters,
 priority, and GUID-based dedup so items never re-notify. It's the reference
-implementation of the plugin contract.
+implementation of the input plugin contract.
 
 ## Best practices
 
