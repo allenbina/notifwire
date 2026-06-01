@@ -8,8 +8,13 @@
 *.swp
 Thumbs.db
 
-# Rust / Tauri (for when code lands)
+# Rust / Tauri
 /target
 **/target
 node_modules/
 dist/
+
+# Frontend (SvelteKit) + Tauri generated artifacts
+.svelte-kit/
+app/build/
+app/src-tauri/gen/

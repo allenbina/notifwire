@@ -14,8 +14,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
-    name: Rust (Windows)
+  build:
+    name: Build & test (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +28,22 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # The Tauri app embeds the frontend at compile time (generate_context!),
+      # so the SvelteKit build must run before the cargo steps. This also
+      # serves as the frontend build gate.
+      - name: Build frontend
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -36,7 +52,3 @@ jobs:
 
       - name: Test
         run: cargo test --all-features
-
-  # The SvelteKit frontend build job lands with the Tauri v2 app shell
-  # (second half of #1). Until app/ exists there is nothing to build, so the
-  # job is intentionally omitted rather than left to fail.

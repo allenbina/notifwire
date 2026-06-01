@@ -5,9 +5,9 @@ members = [
     "crates/transport",
     "crates/cli",
     "crates/consumer",
+    "app/src-tauri",
 ]
-# `app/src-tauri` (the Tauri v2 desktop app) is added as a member when the
-# app shell lands (D0-1, second half). Keep this list in dependency order.
+# Keep this list in dependency order; the Tauri desktop app comes last.
 
 [workspace.package]
 version = "0.0.0"

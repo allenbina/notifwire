@@ -1,0 +1,28 @@
+[package]
+name = "notifwire-app"
+description = "notifwire desktop app — Tauri v2 shell with a SvelteKit frontend."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# This crate is intentionally NOT opted into the workspace lints: Tauri's
+# generate_context!/mobile macros expand into this crate and can trip the
+# stricter rust lints (unsafe_code = "deny", missing_debug_implementations).
+# `cargo clippy -- -D warnings` in CI still lints it for real clippy issues.
+
+[lib]
+name = "notifwire_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.2" }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.2" }
+tauri-plugin-log = "2"
