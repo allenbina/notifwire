@@ -5,9 +5,11 @@
 //! apply-if-newer semantics (D0-4), and the rules engine. Nothing here depends
 //! on a platform or a transport.
 
+mod capture;
 mod config;
 mod notification;
 
+pub use capture::{CaptureError, NotificationSource, SyntheticSource};
 pub use config::{Config, Freshness};
 pub use notification::{Notification, Priority, SourcePlatform};
 
