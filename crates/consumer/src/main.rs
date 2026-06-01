@@ -27,6 +27,11 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     since: u64,
 
+    /// Show only NEW notifications, skipping the producer's backlog. Recommended
+    /// for display so the consumer doesn't re-toast everything on connect.
+    #[arg(long)]
+    live: bool,
+
     /// Show notifications as native Windows toasts (default: print to stdout).
     #[arg(long)]
     display_windows: bool,
@@ -84,5 +89,5 @@ async fn main() -> Result<()> {
     );
 
     let pipeline = Pipeline::new(rules, cli.dedup_window_ms, history, sink);
-    run_with_pipeline(&cli.producer, cli.since, pipeline).await
+    run_with_pipeline(&cli.producer, cli.since, cli.live, pipeline).await
 }

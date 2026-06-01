@@ -153,6 +153,8 @@ impl MeshProducer for SseProducer {
 #[derive(Deserialize)]
 struct EventsQuery {
     since: Option<Cursor>,
+    /// When true, skip the backlog and stream only notifications from now on.
+    live: Option<bool>,
 }
 
 fn to_event(seq: Cursor, notification: &Notification) -> Event {
@@ -167,22 +169,26 @@ async fn events_handler(
     headers: HeaderMap,
     Query(query): Query<EventsQuery>,
 ) -> impl IntoResponse {
-    // Last-Event-ID (set by a reconnecting EventSource) wins over ?since=.
-    let since = headers
-        .get("last-event-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<Cursor>().ok())
-        .or(query.since)
-        .unwrap_or(0);
-
     // Subscribe BEFORE snapshotting so nothing slips through the boundary.
     let mut rx = state.tx.subscribe();
-    let catch_up = {
+    let (replay, mut last_sent) = {
         let ob = state.outbox.lock().expect("outbox mutex poisoned");
-        ob.since(since)
+        if query.live.unwrap_or(false) {
+            // Live: skip the backlog, stream only notifications from now on.
+            (Vec::new(), ob.latest())
+        } else {
+            // Last-Event-ID (set by a reconnecting EventSource) wins over ?since=.
+            let since = headers
+                .get("last-event-id")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<Cursor>().ok())
+                .or(query.since)
+                .unwrap_or(0);
+            let catch_up = ob.since(since);
+            let last = catch_up.events.last().map(|s| s.seq).unwrap_or(since);
+            (catch_up.events, last)
+        }
     };
-    let replay = catch_up.events;
-    let mut last_sent = replay.last().map(|s| s.seq).unwrap_or(since);
 
     let stream = async_stream::stream! {
         for ev in replay {
@@ -230,14 +236,15 @@ impl SseClient {
             base_url: base_url.into(),
         }
     }
-}
 
-impl MeshConsumer for SseClient {
-    async fn subscribe(&self, since: Cursor) -> Result<crate::EventStream, TransportError> {
-        let url = format!(
-            "{}/events?since={since}",
-            self.base_url.trim_end_matches('/')
-        );
+    /// Subscribe to only *new* notifications, skipping the producer's backlog.
+    pub async fn subscribe_live(&self) -> Result<crate::EventStream, TransportError> {
+        self.open("live=true").await
+    }
+
+    /// Open the `/events` stream with a raw query string (e.g. `since=4`).
+    async fn open(&self, query: &str) -> Result<crate::EventStream, TransportError> {
+        let url = format!("{}/events?{query}", self.base_url.trim_end_matches('/'));
         let resp = reqwest::Client::new()
             .get(&url)
             .send()
@@ -298,6 +305,12 @@ impl MeshConsumer for SseClient {
     }
 }
 
+impl MeshConsumer for SseClient {
+    async fn subscribe(&self, since: Cursor) -> Result<crate::EventStream, TransportError> {
+        self.open(&format!("since={since}")).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +368,28 @@ mod tests {
         let mut reconnected = client.subscribe(2).await.unwrap();
         assert_eq!(next_seq(&mut reconnected).await, 3);
         assert_eq!(next_seq(&mut reconnected).await, 4);
+    }
+
+    #[tokio::test]
+    async fn live_skips_backlog() {
+        let server = SseServer::new(100);
+        let producer = server.producer();
+        let (addr, serve) = server.bind("127.0.0.1:0").await.unwrap();
+        tokio::spawn(serve);
+
+        // Backlog before the live consumer connects.
+        producer.publish(note("old1"));
+        producer.publish(note("old2"));
+
+        let client = SseClient::new(format!("http://{addr}"));
+        let mut stream = client.subscribe_live().await.unwrap();
+
+        // Let the handler register, then publish a fresh one.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        producer.publish(note("new"));
+
+        // Live yields only the new event (seq 3), never the backlog (1, 2).
+        assert_eq!(next_seq(&mut stream).await, 3);
     }
 
     #[tokio::test]

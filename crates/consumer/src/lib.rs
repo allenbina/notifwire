@@ -94,13 +94,16 @@ impl Pipeline {
 pub async fn run_with_pipeline(
     producer_url: &str,
     since: Cursor,
+    live: bool,
     mut pipeline: Pipeline,
 ) -> Result<()> {
     let client = SseClient::new(producer_url);
-    let mut stream = client
-        .subscribe(since)
-        .await
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let subscribe = if live {
+        client.subscribe_live().await
+    } else {
+        client.subscribe(since).await
+    };
+    let mut stream = subscribe.map_err(|e| anyhow::anyhow!(e.to_string()))?;
     while let Some(item) = stream.next().await {
         let seq_note = item.map_err(|e| anyhow::anyhow!(e.to_string()))?;
         pipeline.handle(&seq_note.notification, now_ms())?;
