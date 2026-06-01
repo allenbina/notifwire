@@ -1,11 +1,16 @@
 //! notifwire transport.
 //!
-//! Defines the `MeshTransport` trait — the seam between the notification
-//! pipeline and how bytes move between a producer and a consumer — and an
-//! SSE implementation behind it (D0-5). A WebSocket adapter can slot in
-//! later without touching callers.
-//!
-//! This is a stub crate scaffolded in D0-1.
+//! Defines the seam between the notification pipeline and how bytes move
+//! between a producer and a consumer. The catch-up foundation lives here: the
+//! monotonic [`Cursor`] and the bounded producer [`Outbox`] that backs offline
+//! recovery. The `MeshTransport` trait and its SSE implementation (serve +
+//! pull-since-cursor, reconnect/catch-up) land alongside each other next, so
+//! the trait is shaped against a real implementation rather than in the
+//! abstract (D0-5).
+
+mod outbox;
+
+pub use outbox::{CatchUp, Cursor, Outbox, Sequenced};
 
 /// Crate version string.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
