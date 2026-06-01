@@ -1,0 +1,23 @@
+[package]
+name = "notifwire-cli"
+description = "notifwire CLI: notifwire-send, the synthetic-injection test harness and localhost ingest client."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+# The injection harness the whole pipeline is tested against (D0-6).
+[[bin]]
+name = "notifwire-send"
+path = "src/main.rs"
+
+[dependencies]
+notifwire-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true

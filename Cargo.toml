@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/transport",
+    "crates/cli",
+    "crates/consumer",
+]
+# `app/src-tauri` (the Tauri v2 desktop app) is added as a member when the
+# app shell lands (D0-1, second half). Keep this list in dependency order.
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/allenbina/notifwire"
+authors = ["allenbina"]
+rust-version = "1.82"
+
+# Shared dependency versions. Crates opt in with `serde.workspace = true`, etc.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Workspace-wide lints. CI runs `cargo clippy -- -D warnings`, so anything
+# below at `warn` is a hard error in CI. Crates opt in with `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code = "deny"          # individual crates that need it (producer-win, tauri) override locally
+unused = { level = "warn", priority = -1 }   # lint group — needs priority so specifics can override
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

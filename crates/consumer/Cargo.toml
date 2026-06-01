@@ -1,0 +1,22 @@
+[package]
+name = "notifwire-consumer"
+description = "notifwire consumer: subscribes to producers and (for D0) prints what it receives."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "notifwire-consumer"
+path = "src/main.rs"
+
+[dependencies]
+notifwire-core = { path = "../core" }
+notifwire-transport = { path = "../transport" }
+anyhow.workspace = true
+tokio.workspace = true

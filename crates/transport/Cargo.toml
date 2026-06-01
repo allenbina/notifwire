@@ -1,0 +1,18 @@
+[package]
+name = "notifwire-transport"
+description = "notifwire transport: the MeshTransport trait and its SSE implementation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notifwire-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
