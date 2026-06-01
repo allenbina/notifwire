@@ -62,4 +62,9 @@ onboarding) → listens via `UserNotificationListener` (D1-4).
 
 ## Decision
 
-> **Pending** — surfaced to the maintainer. Default recommendation: Option A.
+> **Option A — sparse package (packaging with external location).** Confirmed
+> by the maintainer (2026-06-01). Rationale: the package-identity requirement is
+> a Windows platform constraint, not a notifwire-imposed one, and the sparse
+> package is the lowest-friction route that keeps Tauri's normal installer.
+> Signing posture (ship-signed vs documented self-signed trust) to be settled
+> when D1-4 lands.
