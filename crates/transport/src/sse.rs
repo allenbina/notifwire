@@ -13,11 +13,12 @@
 
 use crate::{Cursor, MeshConsumer, MeshProducer, Outbox, Sequenced, TransportError};
 use axum::{
+    extract::Json,
     extract::{Query, State},
     http::HeaderMap,
     response::sse::{Event, KeepAlive, Sse},
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use futures::{Stream, StreamExt};
@@ -34,6 +35,21 @@ const BROADCAST_CAPACITY: usize = 1024;
 struct ServerState {
     outbox: Arc<Mutex<Outbox>>,
     tx: broadcast::Sender<Sequenced>,
+}
+
+impl ServerState {
+    /// Assign the next cursor, buffer the notification for catch-up, and fan it
+    /// out to any live subscribers. The single source of truth for publishing,
+    /// shared by the producer handle and the ingest endpoint.
+    fn publish(&self, notification: Notification) -> Cursor {
+        let seq = {
+            let mut ob = self.outbox.lock().expect("outbox mutex poisoned");
+            ob.append(notification.clone())
+        };
+        // No live subscribers is fine — the outbox still has it for catch-up.
+        let _ = self.tx.send(Sequenced { seq, notification });
+        seq
+    }
 }
 
 /// An SSE producer: owns the outbox and serves the event stream.
@@ -67,10 +83,14 @@ impl SseServer {
         }
     }
 
-    /// The axum router exposing `GET /events`.
+    /// The axum router: `GET /events` (subscribe) and `POST /ingest` (local
+    /// injection). For D0 both share one listener; `/ingest` is meant to be
+    /// bound to localhost only — splitting it onto its own loopback listener
+    /// is a follow-up once the producer node proper lands (D1).
     pub fn router(&self) -> Router {
         Router::new()
             .route("/events", get(events_handler))
+            .route("/ingest", post(ingest_handler))
             .with_state(self.state.clone())
     }
 
@@ -92,13 +112,7 @@ impl SseServer {
 
 impl MeshProducer for SseProducer {
     fn publish(&self, notification: Notification) -> Cursor {
-        let seq = {
-            let mut ob = self.state.outbox.lock().expect("outbox mutex poisoned");
-            ob.append(notification.clone())
-        };
-        // No live subscribers is fine — the outbox still has it for catch-up.
-        let _ = self.state.tx.send(Sequenced { seq, notification });
-        seq
+        self.state.publish(notification)
     }
 }
 
@@ -155,6 +169,18 @@ async fn events_handler(
 
     let boxed: Pin<Box<dyn Stream<Item = EventResult> + Send>> = Box::pin(stream);
     Sse::new(boxed).keep_alive(KeepAlive::default())
+}
+
+/// `POST /ingest` — the localhost injection point. Input plugins and
+/// `notifwire-send` POST a normalized notification here; the node assigns it a
+/// cursor and returns it. This is the local half of the producer: capture and
+/// input plugins funnel through the same door.
+async fn ingest_handler(
+    State(state): State<ServerState>,
+    Json(notification): Json<Notification>,
+) -> impl IntoResponse {
+    let seq = state.publish(notification);
+    Json(serde_json::json!({ "seq": seq }))
 }
 
 /// An SSE consumer that dials a producer's `/events` endpoint.
@@ -295,6 +321,31 @@ mod tests {
         let mut reconnected = client.subscribe(2).await.unwrap();
         assert_eq!(next_seq(&mut reconnected).await, 3);
         assert_eq!(next_seq(&mut reconnected).await, 4);
+    }
+
+    #[tokio::test]
+    async fn ingest_endpoint_publishes_and_is_received() {
+        let server = SseServer::new(100);
+        let (addr, serve) = server.bind("127.0.0.1:0").await.unwrap();
+        tokio::spawn(serve);
+        let base = format!("http://{addr}");
+
+        // POST a notification to /ingest exactly as notifwire-send does.
+        let resp = reqwest::Client::new()
+            .post(format!("{base}/ingest"))
+            .header("content-type", "application/json")
+            .body(serde_json::to_string(&note("ingested")).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        let body: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+        assert_eq!(body["seq"], 1);
+
+        // A consumer subscribing from 0 receives the ingested notification.
+        let client = SseClient::new(base);
+        let mut stream = client.subscribe(0).await.unwrap();
+        assert_eq!(next_seq(&mut stream).await, 1);
     }
 
     #[tokio::test]
