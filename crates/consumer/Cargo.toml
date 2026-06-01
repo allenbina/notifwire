@@ -19,4 +19,11 @@ path = "src/main.rs"
 notifwire-core = { path = "../core" }
 notifwire-transport = { path = "../transport" }
 anyhow.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# E2E loopback drives notifwire-send's real path; no dependency cycle since
+# the cli crate doesn't depend on the consumer.
+notifwire-cli = { path = "../cli" }

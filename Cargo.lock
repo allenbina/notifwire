@@ -752,6 +752,9 @@ name = "notifwire-consumer"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "futures",
+ "notifwire-cli",
  "notifwire-core",
  "notifwire-transport",
  "tokio",
