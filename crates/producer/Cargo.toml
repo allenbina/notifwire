@@ -16,7 +16,9 @@ name = "notifwire-producer"
 path = "src/main.rs"
 
 [dependencies]
+notifwire-core = { path = "../core" }
 notifwire-transport = { path = "../transport" }
+notifwire-producer-win = { path = "../producer-win" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 clap = { version = "4", features = ["derive"] }
 anyhow.workspace = true

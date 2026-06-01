@@ -2205,6 +2205,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "notifwire-core",
+ "notifwire-producer-win",
  "notifwire-transport",
  "tokio",
 ]
