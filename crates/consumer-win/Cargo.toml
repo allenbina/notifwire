@@ -22,3 +22,10 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell",
 ] }
 winreg = "0.52"
+
+# For the display<->capture self-test (tests/display_loopback.rs): show a toast,
+# then capture it back via producer-win and assert — no human eyes needed.
+[target.'cfg(windows)'.dev-dependencies]
+notifwire-producer-win = { path = "../producer-win" }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+winreg = "0.52"
