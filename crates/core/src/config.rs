@@ -129,7 +129,7 @@ mod tests {
             "config_version": 47,
             "updated_at": "2026-05-31T18:04:00Z",
             "updated_by": "allen-macbook",
-            "producers": [{"id": "mac1", "url": "https://mac.allenbina.uk"}],
+            "producers": [{"id": "mac1", "url": "https://mac.local"}],
             "focuses": [{"name": "Work"}]
         }"#;
         let parsed: Config = serde_json::from_str(json).unwrap();

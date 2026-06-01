@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
 
     let sink: Box<dyn NotificationSink> = if cli.display_windows {
         Box::new(
-            WindowsToastSink::new("uk.allenbina.notifwire", "notifwire")
+            WindowsToastSink::new("notifwire", "notifwire")
                 .map_err(|e| anyhow::anyhow!("starting Windows toast display: {e}"))?,
         )
     } else {

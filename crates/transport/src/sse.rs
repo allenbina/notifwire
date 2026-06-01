@@ -224,7 +224,7 @@ pub struct SseClient {
 }
 
 impl SseClient {
-    /// `base_url` is the producer root, e.g. `http://mac.allenbina.uk:8787`.
+    /// `base_url` is the producer root, e.g. `http://mac.local:8787`.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),

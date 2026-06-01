@@ -14,7 +14,7 @@ pub struct WindowsToastSink {
 impl WindowsToastSink {
     /// Register the AUMID (process id + display metadata) and build a sink that
     /// shows toasts under it. `aumid` is a stable id like
-    /// `"uk.allenbina.notifwire"`; `display_name` is what the toast is labeled.
+    /// `"notifwire"`; `display_name` is what the toast is labeled.
     pub fn new(
         aumid: impl AsRef<str>,
         display_name: impl AsRef<str>,

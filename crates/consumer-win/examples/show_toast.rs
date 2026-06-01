@@ -2,7 +2,7 @@
 //!
 //! `cargo run -p notifwire-consumer-win --example show_toast`
 //!
-//! Registers the `uk.allenbina.notifwire` AppUserModelID (an HKCU key) and
+//! Registers the `notifwire` AppUserModelID (an HKCU key) and
 //! shows one toast. If it pops top-right / lands in the Action Center, native
 //! display works unpackaged — the same question we answered for capture.
 
@@ -10,7 +10,7 @@ use notifwire_consumer_win::WindowsToastSink;
 use notifwire_core::{Notification, NotificationSink, SourcePlatform};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sink = WindowsToastSink::new("uk.allenbina.notifwire", "notifwire")?;
+    let sink = WindowsToastSink::new("notifwire", "notifwire")?;
     let n = Notification::new(
         "test-1",
         "notifwire",

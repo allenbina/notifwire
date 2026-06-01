@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "notifwire",
   "version": "0.0.0",
-  "identifier": "uk.allenbina.notifwire",
+  "identifier": "com.notifwire.app",
   "build": {
     "frontendDist": "../build",
     "devUrl": "http://localhost:5173",

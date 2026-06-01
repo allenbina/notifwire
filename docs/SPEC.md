@@ -549,7 +549,7 @@ icon via Simple Icons.
 
 ```bash
 # Send to a remote producer instead of localhost
-NOTIFWIRE_HOST=mac.allenbina.uk notifwire-send "Remote job done"
+NOTIFWIRE_HOST=mac.local notifwire-send "Remote job done"
 
 # Timeout is fast (default 2s) — scripts never block on notifwire
 # Exit codes are meaningful — CI-friendly
