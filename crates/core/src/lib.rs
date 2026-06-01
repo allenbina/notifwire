@@ -11,6 +11,7 @@ mod dedup;
 mod icon;
 mod notification;
 mod rules;
+mod sink;
 
 pub use capture::{CaptureError, NotificationSource, SyntheticSource};
 pub use config::{Config, Freshness};
@@ -18,6 +19,7 @@ pub use dedup::Deduper;
 pub use icon::{classify, icon_chain, IconRef, IconStep};
 pub use notification::{Notification, Priority, SourcePlatform};
 pub use rules::{DefaultMode, Filter, FilterAction, MatchField, Rules, Verdict};
+pub use sink::{DisplayError, NotificationSink};
 
 /// Crate version string, surfaced in handshakes and `--version` output.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
