@@ -1,7 +1,15 @@
 //! Non-Windows stub so the crate (and the workspace) builds cross-platform.
 //! Windows notification capture is, unsurprisingly, Windows-only.
 
+use crate::AccessState;
 use notifwire_core::{CaptureError, Notification, NotificationSource};
+
+/// Always errors off Windows.
+pub fn request_access() -> Result<AccessState, CaptureError> {
+    Err(CaptureError::Backend(
+        "Windows notification capture is only available on Windows".to_owned(),
+    ))
+}
 
 /// Placeholder on non-Windows targets: construction fails with a clear error.
 #[derive(Debug)]

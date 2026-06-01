@@ -71,6 +71,26 @@ capture needed):
 notifwire-send "hello from the CLI"     # should appear on the consumer
 ```
 
+## Windows capture (manual) _(D1)_
+
+Capture live Windows toasts with a plain (unpackaged) build — verified working
+on Windows 11 26200; no MSIX/sparse package or signing required (see
+`docs/windows-notification-capture.md`):
+
+```
+# check / grant notification access (first run shows the consent prompt)
+notifwire-producer --check-access            # prints "notification access: Granted"
+
+# terminal 1: producer capturing Windows toasts
+notifwire-producer --bind 127.0.0.1:8787 --capture-windows
+
+# terminal 2: consumer — existing Action Center toasts replay, new ones stream live
+notifwire-consumer --producer http://127.0.0.1:8787
+```
+
+`GetNotificationsAsync` returns the current Action Center contents, so the
+consumer sees a catch-up batch immediately, then new toasts as they fire.
+
 ## Test
 
 Strategy: most logic is OS-independent and unit-tested; **OS capture is isolated

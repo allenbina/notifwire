@@ -14,12 +14,24 @@
 //! Windows runner, validating the bindings), but live capture is validated in
 //! D1-6 once the sparse package + permission grant are in place.
 
+/// Result of requesting notification-access permission from Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessState {
+    /// The user has granted access; capture will work.
+    Granted,
+    /// The user denied access; capture yields nothing until re-granted in
+    /// Settings → Privacy & security → Notifications.
+    Denied,
+    /// Not yet decided (no prompt answered).
+    Unspecified,
+}
+
 #[cfg(windows)]
 mod windows_impl;
 #[cfg(windows)]
-pub use windows_impl::WindowsNotificationSource;
+pub use windows_impl::{request_access, WindowsNotificationSource};
 
 #[cfg(not(windows))]
 mod stub;
 #[cfg(not(windows))]
-pub use stub::WindowsNotificationSource;
+pub use stub::{request_access, WindowsNotificationSource};

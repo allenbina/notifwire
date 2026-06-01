@@ -51,11 +51,24 @@ struct Cli {
     /// Node id stamped on captured notifications.
     #[arg(long, default_value = "windows")]
     node_id: String,
+
+    /// Request/check Windows notification-access permission, print the result,
+    /// and exit (first-run onboarding; triggers the consent prompt).
+    #[arg(long)]
+    check_access: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.check_access {
+        let state = notifwire_producer_win::request_access()
+            .map_err(|e| anyhow::anyhow!("querying notification access: {e}"))?;
+        println!("notification access: {state:?}");
+        return Ok(());
+    }
+
     let server = match &cli.persist {
         Some(path) => SseServer::with_persistence(cli.capacity, path),
         None => SseServer::new(cli.capacity),

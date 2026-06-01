@@ -60,11 +60,30 @@ onboarding) → listens via `UserNotificationListener` (D1-4).
   build can't even call the API), so the proof lands *with* D1-4, not before.
 - **D1-7 (durable outbox)** is independent of this decision and can proceed.
 
+## Empirical result (D1-4, 2026-06-01) — capture works UNPACKAGED
+
+Tested on the dev laptop (Windows 11 Home 26200) with a plain, **unpackaged**
+`cargo build` of `notifwire-producer --capture-windows`:
+
+- `UserNotificationListener::Current()` + `RequestAccessAsync()` returned
+  **Allowed** — no `APPMODEL_ERROR_NO_PACKAGE`.
+- `GetNotificationsAsync(Toast)` returned the Action Center contents; **23 real
+  notifications** were captured, normalized (app name + title + body), served
+  over SSE, and printed by a consumer — full end-to-end, no errors.
+
+So the package-identity requirement the docs describe is **not enforced on this
+Windows build** for reading via `UserNotificationListener`. The sparse package
+is **not required** to capture, at least here.
+
+Caveat: verified on one machine/OS build. Some Windows configurations or older
+builds may still require identity, so the sparse-package path stays documented
+as a **fallback**, not the default.
+
 ## Decision
 
-> **Option A — sparse package (packaging with external location).** Confirmed
-> by the maintainer (2026-06-01). Rationale: the package-identity requirement is
-> a Windows platform constraint, not a notifwire-imposed one, and the sparse
-> package is the lowest-friction route that keeps Tauri's normal installer.
-> Signing posture (ship-signed vs documented self-signed trust) to be settled
-> when D1-4 lands.
+> **Revised (2026-06-01): ship the Windows producer UNPACKAGED.** Empirically
+> capture works with no package identity on Win11 26200 (see above), so the
+> default is the plain exe build — no signing, no cert trust, no MSIX. Option A
+> (sparse package) is retained **only as a documented fallback** for any Windows
+> config that rejects the unpackaged API. This supersedes the earlier "Option A
+> is the path" call, which was based on the docs rather than a test.

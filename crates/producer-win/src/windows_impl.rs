@@ -1,5 +1,6 @@
 //! WinRT capture implementation (Windows only).
 
+use crate::AccessState;
 use notifwire_core::{CaptureError, Notification, NotificationSource, SourcePlatform};
 use std::collections::HashSet;
 use std::thread;
@@ -63,7 +64,7 @@ fn run_capture(node: &str, tx: &mpsc::Sender<Notification>) {
         }
     };
 
-    match request_access(&listener) {
+    match access_allowed(&listener) {
         Ok(true) => {}
         Ok(false) => {
             eprintln!("notifwire: notification access not granted; capturing nothing");
@@ -91,9 +92,37 @@ fn run_capture(node: &str, tx: &mpsc::Sender<Notification>) {
     }
 }
 
-fn request_access(listener: &UserNotificationListener) -> windows::core::Result<bool> {
+fn access_allowed(listener: &UserNotificationListener) -> windows::core::Result<bool> {
     let status = listener.RequestAccessAsync()?.get()?;
     Ok(status == UserNotificationListenerAccessStatus::Allowed)
+}
+
+/// Request (and, on first run, prompt for) notification-access permission,
+/// returning the resulting [`AccessState`]. This is the onboarding entry point
+/// (D1-5). Runs the WinRT call on a dedicated thread for apartment safety.
+pub fn request_access() -> Result<AccessState, CaptureError> {
+    std::thread::Builder::new()
+        .name("notifwire-winrt-access".to_owned())
+        .spawn(request_access_inner)
+        .map_err(|e| CaptureError::Backend(format!("spawning access thread: {e}")))?
+        .join()
+        .map_err(|_| CaptureError::Backend("access thread panicked".to_owned()))?
+}
+
+fn request_access_inner() -> Result<AccessState, CaptureError> {
+    let listener =
+        UserNotificationListener::Current().map_err(|e| CaptureError::Backend(e.to_string()))?;
+    let status = listener
+        .RequestAccessAsync()
+        .and_then(|op| op.get())
+        .map_err(|e| CaptureError::Backend(e.to_string()))?;
+    Ok(if status == UserNotificationListenerAccessStatus::Allowed {
+        AccessState::Granted
+    } else if status == UserNotificationListenerAccessStatus::Denied {
+        AccessState::Denied
+    } else {
+        AccessState::Unspecified
+    })
 }
 
 /// Read current toast notifications, returning the ones not seen before.
