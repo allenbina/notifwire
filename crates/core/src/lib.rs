@@ -5,8 +5,10 @@
 //! apply-if-newer semantics (D0-4), and the rules engine. Nothing here depends
 //! on a platform or a transport.
 
+mod config;
 mod notification;
 
+pub use config::{Config, Freshness};
 pub use notification::{Notification, Priority, SourcePlatform};
 
 /// Crate version string, surfaced in handshakes and `--version` output.
