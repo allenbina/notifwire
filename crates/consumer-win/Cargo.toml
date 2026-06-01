@@ -1,0 +1,24 @@
+[package]
+name = "notifwire-consumer-win"
+description = "notifwire Windows native display — render notifications as WinRT toasts."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# Not opted into the workspace lints: the windows-crate / WinRT surface trips
+# the stricter rust lints. Still covered by `clippy -D warnings`.
+
+[dependencies]
+notifwire-core = { path = "../core" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Data_Xml_Dom",
+    "UI_Notifications",
+    "Win32_UI_Shell",
+] }
+winreg = "0.52"

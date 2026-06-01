@@ -7,6 +7,7 @@ members = [
     "crates/consumer",
     "crates/producer",
     "crates/producer-win",
+    "crates/consumer-win",
     "app/src-tauri",
 ]
 # Keep this list in dependency order; the Tauri desktop app comes last.
