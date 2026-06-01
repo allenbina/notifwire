@@ -1,0 +1,27 @@
+[package]
+name = "notifwire-producer-win"
+description = "notifwire Windows notification capture via WinRT UserNotificationListener."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# Not opted into the workspace lints: the windows-crate surface and WinRT
+# patterns trip the stricter rust lints. Still covered by `clippy -D warnings`.
+
+[dependencies]
+notifwire-core = { path = "../core" }
+
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["sync"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "UI_Notifications",
+    "UI_Notifications_Management",
+    "ApplicationModel",
+] }
