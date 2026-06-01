@@ -8,9 +8,15 @@
 //! the trait is shaped against a real implementation rather than in the
 //! abstract (D0-5).
 
+mod error;
+mod mesh;
 mod outbox;
+mod sse;
 
+pub use error::TransportError;
+pub use mesh::{EventStream, MeshConsumer, MeshProducer};
 pub use outbox::{CatchUp, Cursor, Outbox, Sequenced};
+pub use sse::{SseClient, SseProducer, SseServer};
 
 /// Crate version string.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
