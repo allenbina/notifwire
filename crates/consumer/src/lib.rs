@@ -5,6 +5,9 @@
 //! end-to-end loop. The native OS display, filters, dedup, icons, and history
 //! arrive in D2.
 
+mod history;
+pub use history::History;
+
 use anyhow::Result;
 use futures::StreamExt;
 use notifwire_core::Notification;
