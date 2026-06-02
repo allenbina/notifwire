@@ -14,6 +14,15 @@
 		timestamp_ms: number;
 	}
 
+	interface HistoryItem {
+		id: string;
+		app_name: string;
+		title: string;
+		body: string;
+		producer_node: string;
+		timestamp: string;
+	}
+
 	interface ProducerEntry {
 		url: string;
 		label: string | null;
@@ -39,18 +48,35 @@
 		filters: Filter[];
 	}
 
+	interface RetentionConfig {
+		default_days: number;
+		max_count: number | null;
+		per_producer: Record<string, number>;
+	}
+
 	// ---------------------------------------------------------------------------
 	// State (Svelte 5 runes)
 	// ---------------------------------------------------------------------------
 
-	type Panel = 'notifications' | 'settings';
-	type SettingsTab = 'producers' | 'filters';
+	type Panel = 'notifications' | 'history' | 'settings';
+	type SettingsTab = 'producers' | 'filters' | 'retention';
 
 	let activePanel = $state<Panel>('notifications');
 	let settingsTab = $state<SettingsTab>('producers');
 
 	// Notifications panel
 	let notifications = $state<NotificationItem[]>([]);
+
+	// History panel
+	const HISTORY_PAGE_SIZE = 50;
+	let historyItems = $state<HistoryItem[]>([]);
+	let historyOffset = $state(0);
+	let historyHasMore = $state(false);
+	let historyFilter = $state('');
+	let historyLoading = $state(false);
+	let historyError = $state('');
+	let pruneResult = $state<string | null>(null);
+	let pruneLoading = $state(false);
 
 	// Settings panel — producers list
 	let producers = $state<ProducerEntry[]>([]);
@@ -72,6 +98,14 @@
 	let newFilterField = $state<Filter['field']>('any');
 	let newFilterContains = $state('');
 	let newFilterAction = $state<Filter['action']>('block');
+
+	// Retention settings
+	let retention = $state<RetentionConfig>({ default_days: 30, max_count: null, per_producer: {} });
+	let retentionError = $state('');
+	let retentionBusy = $state(false);
+	let retentionDefaultDaysInput = $state(30);
+	let retentionMaxCountEnabled = $state(false);
+	let retentionMaxCountInput = $state(1000);
 
 	// ---------------------------------------------------------------------------
 	// Lifecycle
@@ -141,11 +175,86 @@
 		}
 	}
 
+	async function refreshRetention() {
+		try {
+			retention = await invoke<RetentionConfig>('get_retention');
+			retentionDefaultDaysInput = retention.default_days;
+			retentionMaxCountEnabled = retention.max_count !== null;
+			retentionMaxCountInput = retention.max_count ?? 1000;
+		} catch (e) {
+			console.error('get_retention failed:', e);
+		}
+	}
+
 	// Called when settings tab is opened so data is fresh
 	async function onSettingsTabActivated() {
 		if (settingsTab === 'filters') {
 			await refreshFilters();
 			await refreshSeenApps();
+		} else if (settingsTab === 'retention') {
+			await refreshRetention();
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// History actions
+	// ---------------------------------------------------------------------------
+
+	async function loadHistory(reset: boolean) {
+		if (historyLoading) return;
+		historyLoading = true;
+		historyError = '';
+		const offset = reset ? 0 : historyOffset;
+		try {
+			const items = await invoke<HistoryItem[]>('get_history', {
+				appName: historyFilter.trim() || null,
+				limit: HISTORY_PAGE_SIZE,
+				offset
+			});
+			if (reset) {
+				historyItems = items;
+			} else {
+				historyItems = [...historyItems, ...items];
+			}
+			historyOffset = offset + items.length;
+			historyHasMore = items.length === HISTORY_PAGE_SIZE;
+		} catch (e) {
+			historyError = String(e);
+		} finally {
+			historyLoading = false;
+		}
+	}
+
+	async function handleHistoryFilterChange() {
+		historyOffset = 0;
+		await loadHistory(true);
+	}
+
+	async function handleLoadMore() {
+		await loadHistory(false);
+	}
+
+	async function handlePruneNow() {
+		pruneLoading = true;
+		pruneResult = null;
+		try {
+			const deleted = await invoke<number>('prune_now');
+			pruneResult = deleted === 0 ? 'Nothing to prune.' : `Pruned ${deleted} row${deleted !== 1 ? 's' : ''}.`;
+			// Reload history after prune
+			historyOffset = 0;
+			await loadHistory(true);
+		} catch (e) {
+			pruneResult = `Error: ${e}`;
+		} finally {
+			pruneLoading = false;
+		}
+	}
+
+	// Trigger history load when switching to the history panel
+	function activateHistory() {
+		activePanel = 'history';
+		if (historyItems.length === 0) {
+			loadHistory(true);
 		}
 	}
 
@@ -277,6 +386,69 @@
 	};
 
 	// ---------------------------------------------------------------------------
+	// Settings actions — retention
+	// ---------------------------------------------------------------------------
+
+	async function handleSaveDefaultDays() {
+		retentionError = '';
+		retentionBusy = true;
+		try {
+			await invoke('set_retention_default', { days: retentionDefaultDaysInput });
+			await refreshRetention();
+		} catch (e) {
+			retentionError = String(e);
+		} finally {
+			retentionBusy = false;
+		}
+	}
+
+	async function handleSaveMaxCount() {
+		retentionError = '';
+		retentionBusy = true;
+		try {
+			const maxCount = retentionMaxCountEnabled ? retentionMaxCountInput : null;
+			await invoke('set_retention_max_count', { maxCount });
+			await refreshRetention();
+		} catch (e) {
+			retentionError = String(e);
+		} finally {
+			retentionBusy = false;
+		}
+	}
+
+	async function handleSaveProducerRetention(url: string, days: number) {
+		retentionError = '';
+		try {
+			await invoke('set_retention_producer', { producerUrl: url, days });
+			await refreshRetention();
+		} catch (e) {
+			retentionError = String(e);
+		}
+	}
+
+	async function handleRemoveProducerRetention(url: string) {
+		retentionError = '';
+		try {
+			await invoke('remove_retention_producer', { producerUrl: url });
+			await refreshRetention();
+		} catch (e) {
+			retentionError = String(e);
+		}
+	}
+
+	// Per-producer input state (keyed by URL)
+	let producerDaysInputs = $state<Record<string, number>>({});
+
+	// Sync producerDaysInputs when retention loads
+	$effect(() => {
+		for (const url of Object.keys(retention.per_producer)) {
+			if (!(url in producerDaysInputs)) {
+				producerDaysInputs[url] = retention.per_producer[url];
+			}
+		}
+	});
+
+	// ---------------------------------------------------------------------------
 	// Helpers
 	// ---------------------------------------------------------------------------
 
@@ -302,6 +474,12 @@
 		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
 		return `${Math.floor(diff / 3600)}h ago`;
 	}
+
+	function relativeTimeFromIso(iso: string): string {
+		const ms = new Date(iso).getTime();
+		if (isNaN(ms)) return iso;
+		return relativeTime(ms);
+	}
 </script>
 
 <div class="app-shell">
@@ -314,6 +492,13 @@
 			onclick={() => { activePanel = 'notifications'; }}
 		>
 			Notifications
+		</button>
+		<button
+			class="nav-item"
+			class:active={activePanel === 'history'}
+			onclick={activateHistory}
+		>
+			History
 		</button>
 		<button
 			class="nav-item"
@@ -351,6 +536,69 @@
 				{/if}
 			</section>
 
+		<!-- History panel -->
+		{:else if activePanel === 'history'}
+			<section class="panel">
+				<h2 class="panel-title">History</h2>
+
+				<div class="history-toolbar">
+					<input
+						type="text"
+						bind:value={historyFilter}
+						placeholder="Filter by app name…"
+						class="history-filter-input"
+						oninput={handleHistoryFilterChange}
+					/>
+					<button
+						class="btn-prune"
+						onclick={handlePruneNow}
+						disabled={pruneLoading}
+					>
+						{pruneLoading ? 'Pruning…' : 'Clear older than retention'}
+					</button>
+				</div>
+
+				{#if pruneResult}
+					<p class="prune-result">{pruneResult}</p>
+				{/if}
+
+				{#if historyError}
+					<p class="add-error">{historyError}</p>
+				{/if}
+
+				{#if historyLoading && historyItems.length === 0}
+					<p class="empty">Loading…</p>
+				{:else if historyItems.length === 0}
+					<p class="empty">No notifications in history.</p>
+				{:else}
+					<ul class="notif-list">
+						{#each historyItems as n (n.id)}
+							<li class="notification-item">
+								<div class="notif-header">
+									<span class="app-name">{n.app_name}</span>
+									<span class="notif-title">{n.title}</span>
+									<span class="timestamp">{relativeTimeFromIso(n.timestamp)}</span>
+								</div>
+								{#if n.body}
+									<p class="notif-body">{n.body}</p>
+								{/if}
+								<p class="notif-meta">from {n.producer_node}</p>
+							</li>
+						{/each}
+					</ul>
+
+					{#if historyHasMore}
+						<button
+							class="btn-load-more"
+							onclick={handleLoadMore}
+							disabled={historyLoading}
+						>
+							{historyLoading ? 'Loading…' : 'Load more'}
+						</button>
+					{/if}
+				{/if}
+			</section>
+
 		<!-- Settings panel -->
 		{:else}
 			<section class="panel">
@@ -371,6 +619,13 @@
 						onclick={async () => { settingsTab = 'filters'; await refreshFilters(); await refreshSeenApps(); }}
 					>
 						Filters
+					</button>
+					<button
+						class="settings-tab"
+						class:active={settingsTab === 'retention'}
+						onclick={async () => { settingsTab = 'retention'; await refreshRetention(); await refreshProducers(); }}
+					>
+						Retention
 					</button>
 				</div>
 
@@ -441,7 +696,7 @@
 					</div>
 
 				<!-- Filters sub-panel -->
-				{:else}
+				{:else if settingsTab === 'filters'}
 					<div class="filters-panel">
 
 						<!-- Default mode -->
@@ -568,6 +823,112 @@
 
 						{#if filtersError}
 							<p class="add-error">{filtersError}</p>
+						{/if}
+
+					</div>
+
+				<!-- Retention sub-panel -->
+				{:else}
+					<div class="filters-panel">
+
+						<!-- Global default -->
+						<div class="filters-section">
+							<h3 class="section-title">Global default</h3>
+							<div class="retention-row">
+								<label class="retention-label">Keep notifications for</label>
+								<input
+									type="number"
+									min="1"
+									max="3650"
+									bind:value={retentionDefaultDaysInput}
+									class="retention-days-input"
+									disabled={retentionBusy}
+								/>
+								<span class="retention-unit">days</span>
+								<button
+									class="btn-add"
+									onclick={handleSaveDefaultDays}
+									disabled={retentionBusy}
+								>
+									Save
+								</button>
+							</div>
+						</div>
+
+						<!-- Max count cap -->
+						<div class="filters-section">
+							<h3 class="section-title">Max notification count</h3>
+							<div class="retention-row">
+								<label class="mode-option">
+									<input
+										type="checkbox"
+										bind:checked={retentionMaxCountEnabled}
+									/>
+									<span>Enforce a cap of</span>
+								</label>
+								<input
+									type="number"
+									min="1"
+									bind:value={retentionMaxCountInput}
+									class="retention-days-input"
+									disabled={!retentionMaxCountEnabled || retentionBusy}
+								/>
+								<span class="retention-unit">notifications</span>
+								<button
+									class="btn-add"
+									onclick={handleSaveMaxCount}
+									disabled={retentionBusy}
+								>
+									Save
+								</button>
+							</div>
+						</div>
+
+						<!-- Per-producer overrides -->
+						<div class="filters-section">
+							<h3 class="section-title">Per-producer overrides</h3>
+							{#if producers.length === 0}
+								<p class="empty">No producers configured.</p>
+							{:else}
+								<ul class="app-list">
+									{#each producers as entry (entry.url)}
+										{@const override_days = retention.per_producer[entry.url]}
+										<li class="app-row retention-producer-row">
+											<span class="app-row-name">{entry.label ?? entry.url}</span>
+											<input
+												type="number"
+												min="1"
+												max="3650"
+												value={producerDaysInputs[entry.url] ?? override_days ?? retention.default_days}
+												class="retention-days-input-sm"
+												oninput={(e) => {
+													producerDaysInputs[entry.url] = parseInt((e.target as HTMLInputElement).value, 10);
+												}}
+											/>
+											<span class="retention-unit">days</span>
+											<button
+												class="btn-add btn-sm"
+												onclick={() => handleSaveProducerRetention(entry.url, producerDaysInputs[entry.url] ?? retention.default_days)}
+											>
+												Save
+											</button>
+											{#if override_days !== undefined}
+												<button
+													class="btn-remove"
+													onclick={() => handleRemoveProducerRetention(entry.url)}
+													title="Reset to default"
+												>
+													✕
+												</button>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+
+						{#if retentionError}
+							<p class="add-error">{retentionError}</p>
 						{/if}
 
 					</div>
@@ -712,6 +1073,90 @@
 		font-size: 0.82rem;
 		opacity: 0.75;
 		line-height: 1.4;
+	}
+
+	.notif-meta {
+		margin: 0.15rem 0 0 0;
+		font-size: 0.72rem;
+		color: #6b7280;
+		opacity: 0.8;
+	}
+
+	/* History toolbar */
+
+	.history-toolbar {
+		display: flex;
+		gap: 0.6rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.history-filter-input {
+		flex: 1;
+		min-width: 160px;
+		padding: 0.42rem 0.65rem;
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		color: #e6e6e6;
+		font-size: 0.88rem;
+	}
+
+	.history-filter-input:focus {
+		outline: none;
+		border-color: #3b82f6;
+	}
+
+	.btn-prune {
+		padding: 0.42rem 0.85rem;
+		background: #1e2232;
+		color: #a0a8be;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		font-size: 0.85rem;
+		cursor: pointer;
+		white-space: nowrap;
+		flex-shrink: 0;
+		transition: color 0.15s, background 0.15s;
+	}
+
+	.btn-prune:hover:not(:disabled) {
+		color: #e6e6e6;
+		background: #2563eb;
+		border-color: #2563eb;
+	}
+
+	.btn-prune:disabled {
+		opacity: 0.45;
+		cursor: default;
+	}
+
+	.prune-result {
+		font-size: 0.82rem;
+		color: #86efac;
+		margin: 0;
+	}
+
+	.btn-load-more {
+		padding: 0.42rem 1rem;
+		background: #1e2232;
+		color: #a0a8be;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		font-size: 0.85rem;
+		cursor: pointer;
+		transition: color 0.15s, background 0.15s;
+		align-self: center;
+	}
+
+	.btn-load-more:hover:not(:disabled) {
+		color: #e6e6e6;
+		background: #22263a;
+	}
+
+	.btn-load-more:disabled {
+		opacity: 0.45;
+		cursor: default;
 	}
 
 	/* Producers list */
@@ -912,6 +1357,11 @@
 		cursor: default;
 	}
 
+	.btn-sm {
+		padding: 0.3rem 0.7rem;
+		font-size: 0.82rem;
+	}
+
 	.add-error {
 		color: #f87171;
 		font-size: 0.8rem;
@@ -994,7 +1444,8 @@
 		font-size: 0.88rem;
 	}
 
-	.mode-option input[type='radio'] {
+	.mode-option input[type='radio'],
+	.mode-option input[type='checkbox'] {
 		accent-color: #3b82f6;
 	}
 
@@ -1197,6 +1648,70 @@
 	.field-keyword:focus {
 		outline: none;
 		border-color: #3b82f6;
+	}
+
+	/* Retention panel */
+
+	.retention-row {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+	}
+
+	.retention-label {
+		font-size: 0.88rem;
+		color: #a0a8be;
+		white-space: nowrap;
+	}
+
+	.retention-days-input {
+		width: 70px;
+		padding: 0.38rem 0.55rem;
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		color: #e6e6e6;
+		font-size: 0.88rem;
+		text-align: right;
+	}
+
+	.retention-days-input:focus {
+		outline: none;
+		border-color: #3b82f6;
+	}
+
+	.retention-days-input:disabled {
+		opacity: 0.4;
+	}
+
+	.retention-days-input-sm {
+		width: 60px;
+		padding: 0.3rem 0.45rem;
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		color: #e6e6e6;
+		font-size: 0.85rem;
+		text-align: right;
+	}
+
+	.retention-days-input-sm:focus {
+		outline: none;
+		border-color: #3b82f6;
+	}
+
+	.retention-unit {
+		font-size: 0.82rem;
+		color: #6b7280;
+		white-space: nowrap;
+	}
+
+	.retention-producer-row {
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		padding: 0.35rem 0.6rem;
 	}
 
 	/* Misc */

@@ -1,14 +1,16 @@
 //! notifwire Tauri app — backend entry point.
 //!
-//! Slice 3C: rules persistence, seen-apps tracking, filters UI.
+//! Slice 3D: SQLite history store, pruning/retention, History panel.
 //!
 //! - Loads `config.json` from `app_config_dir` on startup.
 //! - Auto-connects all enabled producers with persisted rules.
+//! - Each pipeline opens its own History connection to the shared DB file.
 //! - Exposes Tauri commands for CRUD on the producer list.
 //! - Exposes Tauri commands for rules management.
+//! - Exposes Tauri commands for history queries and retention settings.
 //! - `AppState` holds a per-URL map of (JoinHandle, StatusHandle).
 
-use notifwire_consumer::{Pipeline, ReconnectPolicy, StatusHandle};
+use notifwire_consumer::{History, Pipeline, ReconnectPolicy, StatusHandle};
 use notifwire_consumer_win::WindowsToastSink;
 use notifwire_core::{
     DefaultMode, DisplayError, Filter, FilterAction, MatchField, Notification, NotificationSink,
@@ -17,6 +19,7 @@ use notifwire_core::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -34,12 +37,35 @@ pub struct ProducerEntry {
     pub enabled: bool,
 }
 
+/// Retention configuration: how long to keep notifications per-global and per-producer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    /// Default retention in days. Default: 30.
+    pub default_days: u32,
+    /// Optional global cap on number of stored notifications.
+    pub max_count: Option<u32>,
+    /// Per-producer URL overrides: producer URL → retention days.
+    pub per_producer: HashMap<String, u32>,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            default_days: 30,
+            max_count: None,
+            per_producer: HashMap::new(),
+        }
+    }
+}
+
 /// Root of `config.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct AppConfig {
     producers: Vec<ProducerEntry>,
     #[serde(default)]
     rules: Rules,
+    #[serde(default)]
+    retention: RetentionConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +190,9 @@ struct Connection {
 struct AppState {
     connections: Mutex<HashMap<String, Connection>>,
     seen_apps: Arc<Mutex<BTreeSet<String>>>,
+    /// Path to the shared history SQLite database.
+    /// Each pipeline opens its own connection to this file.
+    history_db_path: Mutex<Option<PathBuf>>,
 }
 
 impl Default for AppState {
@@ -171,6 +200,7 @@ impl Default for AppState {
         Self {
             connections: Mutex::new(HashMap::new()),
             seen_apps: Arc::new(Mutex::new(BTreeSet::new())),
+            history_db_path: Mutex::new(None),
         }
     }
 }
@@ -205,7 +235,20 @@ fn connect_one(
         seen_apps: Arc::clone(&state.seen_apps),
     };
 
-    let pipeline = Pipeline::new(rules, 5_000, None, Box::new(sink));
+    // Open a per-pipeline History connection to the shared DB file.
+    // SQLite supports multiple connections to the same WAL-mode file.
+    let history = state
+        .history_db_path
+        .lock()
+        .expect("history_db_path mutex poisoned")
+        .as_ref()
+        .and_then(|p| {
+            History::open(p)
+                .map_err(|e| log::warn!("history open failed for {url}: {e}"))
+                .ok()
+        });
+
+    let pipeline = Pipeline::new(rules, 5_000, history, Box::new(sink));
     let status = StatusHandle::new(url);
     let url_owned = url.to_owned();
     let state_clone = Arc::clone(state);
@@ -255,9 +298,99 @@ fn disconnect_one(state: &Arc<AppState>, url: &str) {
     }
 }
 
+/// Resolve and initialise the history DB path in `AppState`. Called once at startup.
+fn init_history_db(app: &AppHandle, state: &Arc<AppState>) {
+    let db_path = match app
+        .path()
+        .app_data_dir()
+        .map(|d| d.join("history.db"))
+        .map_err(|e| format!("app_data_dir error: {e}"))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("history DB path unavailable: {e}");
+            return;
+        }
+    };
+
+    if let Some(parent) = db_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::warn!("could not create data dir for history DB: {e}");
+            return;
+        }
+    }
+
+    *state
+        .history_db_path
+        .lock()
+        .expect("history_db_path mutex poisoned") = Some(db_path);
+}
+
+/// Run initial pruning according to retention config. Call after `init_history_db`.
+fn prune_with_config(state: &Arc<AppState>, retention: &RetentionConfig) -> usize {
+    let path = state
+        .history_db_path
+        .lock()
+        .expect("history_db_path mutex poisoned")
+        .clone();
+    let path = match path {
+        Some(p) => p,
+        None => return 0,
+    };
+
+    let history = match History::open(&path) {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("prune: could not open history DB: {e}");
+            return 0;
+        }
+    };
+
+    let mut total = 0usize;
+
+    // Use the minimum configured days across default + all per-producer overrides
+    // as a safe global cutoff for now.
+    let min_days = retention
+        .per_producer
+        .values()
+        .copied()
+        .fold(retention.default_days, |a, b| a.min(b));
+
+    let now_ms = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    };
+    let cutoff_ms = now_ms - (min_days as i64) * 86_400 * 1_000;
+
+    match history.prune_older_than_ms(cutoff_ms) {
+        Ok(n) => total += n,
+        Err(e) => log::warn!("prune_older_than_ms failed: {e}"),
+    }
+
+    if let Some(max) = retention.max_count {
+        match history.prune_to_count(max as usize) {
+            Ok(n) => total += n,
+            Err(e) => log::warn!("prune_to_count failed: {e}"),
+        }
+    }
+
+    total
+}
+
 /// Connect all enabled producers from config at startup.
 fn connect_all(app: &AppHandle, state: &Arc<AppState>) {
     let cfg = load_config(app);
+
+    // Initialize history DB and run initial prune before connecting.
+    init_history_db(app, state);
+    let pruned = prune_with_config(state, &cfg.retention);
+    if pruned > 0 {
+        log::info!("startup prune removed {pruned} history rows");
+    }
+
     for entry in &cfg.producers {
         if entry.enabled {
             if let Err(e) = connect_one(app, state, &entry.url, cfg.rules.clone()) {
@@ -463,6 +596,102 @@ fn remove_filter(app: AppHandle, state: State<Arc<AppState>>, index: usize) -> R
 }
 
 // ---------------------------------------------------------------------------
+// History commands
+// ---------------------------------------------------------------------------
+
+/// Query the history DB. Opens a fresh read connection to the shared file.
+#[tauri::command]
+fn get_history(
+    state: State<Arc<AppState>>,
+    app_name: Option<String>,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<Notification>, String> {
+    let path = state
+        .history_db_path
+        .lock()
+        .expect("history_db_path mutex poisoned")
+        .clone();
+    let path = match path {
+        Some(p) => p,
+        None => return Ok(vec![]),
+    };
+    let history = History::open(&path).map_err(|e| format!("history open failed: {e}"))?;
+    history
+        .query_filtered(app_name.as_deref(), None, limit, offset)
+        .map_err(|e| format!("history query failed: {e}"))
+}
+
+/// Return the current retention config.
+#[tauri::command]
+fn get_retention(app: AppHandle) -> RetentionConfig {
+    load_config(&app).retention
+}
+
+/// Update the global default retention days, save config, and re-prune.
+#[tauri::command]
+fn set_retention_default(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    days: u32,
+) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    cfg.retention.default_days = days;
+    save_config(&app, &cfg)?;
+    prune_with_config(&state, &cfg.retention);
+    Ok(())
+}
+
+/// Update the max_count cap, save config, and re-prune.
+#[tauri::command]
+fn set_retention_max_count(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    max_count: Option<u32>,
+) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    cfg.retention.max_count = max_count;
+    save_config(&app, &cfg)?;
+    prune_with_config(&state, &cfg.retention);
+    Ok(())
+}
+
+/// Set a per-producer override retention days, save config, and re-prune.
+#[tauri::command]
+fn set_retention_producer(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    producer_url: String,
+    days: u32,
+) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    cfg.retention.per_producer.insert(producer_url, days);
+    save_config(&app, &cfg)?;
+    prune_with_config(&state, &cfg.retention);
+    Ok(())
+}
+
+/// Remove a per-producer override, save config.
+#[tauri::command]
+fn remove_retention_producer(
+    app: AppHandle,
+    _state: State<Arc<AppState>>,
+    producer_url: String,
+) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    cfg.retention.per_producer.remove(&producer_url);
+    save_config(&app, &cfg)?;
+    Ok(())
+}
+
+/// Manually trigger a prune. Returns total rows deleted.
+#[tauri::command]
+fn prune_now(app: AppHandle, state: State<Arc<AppState>>) -> Result<usize, String> {
+    let cfg = load_config(&app);
+    Ok(prune_with_config(&state, &cfg.retention))
+}
+
+// ---------------------------------------------------------------------------
 // Enum parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -544,6 +773,13 @@ pub fn run() {
             remove_app_rule,
             add_filter,
             remove_filter,
+            get_history,
+            get_retention,
+            set_retention_default,
+            set_retention_max_count,
+            set_retention_producer,
+            remove_retention_producer,
+            prune_now,
         ])
         .run(tauri::generate_context!())
         .expect("notifwire app failed to start");
