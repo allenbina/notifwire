@@ -2244,11 +2244,16 @@ name = "notifwire-app"
 version = "0.0.0"
 dependencies = [
  "log",
+ "notifwire-consumer",
+ "notifwire-consumer-win",
+ "notifwire-core",
+ "notifwire-transport",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-log",
+ "tokio",
 ]
 
 [[package]]
