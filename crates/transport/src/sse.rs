@@ -297,6 +297,26 @@ impl SseClient {
         self.open("live=true").await
     }
 
+    /// Probe the producer's `/health` endpoint, returning its self-report. A
+    /// consumer polls this to distinguish a degraded-but-reachable producer from
+    /// an unreachable one (the latter errors here).
+    pub async fn health(&self) -> Result<notifwire_core::ProducerHealth, TransportError> {
+        let url = format!("{}/health", self.base_url.trim_end_matches('/'));
+        let resp = reqwest::Client::new()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| TransportError::Connect(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(TransportError::Http(format!("status {}", resp.status())));
+        }
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| TransportError::Http(e.to_string()))?;
+        serde_json::from_str(&body).map_err(|e| TransportError::Decode(e.to_string()))
+    }
+
     /// Open the `/events` stream with a raw query string (e.g. `since=4`).
     async fn open(&self, query: &str) -> Result<crate::EventStream, TransportError> {
         let url = format!("{}/events?{query}", self.base_url.trim_end_matches('/'));

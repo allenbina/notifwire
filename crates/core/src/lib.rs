@@ -17,7 +17,10 @@ mod sink;
 pub use capture::{CaptureError, NotificationSource, SyntheticSource};
 pub use config::{Config, Freshness};
 pub use dedup::Deduper;
-pub use health::{CaptureHealth, HealthStatus, ProducerHealth};
+pub use health::{
+    CaptureHealth, ConnectionState, ConsumerHealth, HealthStatus, ProducerHealth, ProducerStatus,
+    SelfChecks,
+};
 pub use icon::{classify, icon_chain, IconRef, IconStep};
 pub use notification::{Notification, Priority, SourcePlatform};
 pub use rules::{DefaultMode, Filter, FilterAction, MatchField, Rules, Verdict};
