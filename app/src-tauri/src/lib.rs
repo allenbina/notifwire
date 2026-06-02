@@ -1,6 +1,6 @@
 //! notifwire Tauri app — backend entry point.
 //!
-//! Slice 3D: SQLite history store, pruning/retention, History panel.
+//! Slice 3E: Focuses — named filter profiles the user can switch between.
 //!
 //! - Loads `config.json` from `app_config_dir` on startup.
 //! - Auto-connects all enabled producers with persisted rules.
@@ -8,6 +8,7 @@
 //! - Exposes Tauri commands for CRUD on the producer list.
 //! - Exposes Tauri commands for rules management.
 //! - Exposes Tauri commands for history queries and retention settings.
+//! - Exposes Tauri commands for focus CRUD and active-focus management.
 //! - `AppState` holds a per-URL map of (JoinHandle, StatusHandle).
 
 use notifwire_consumer::{History, Pipeline, ReconnectPolicy, StatusHandle};
@@ -58,6 +59,38 @@ impl Default for RetentionConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Focus types
+// ---------------------------------------------------------------------------
+
+/// Generate a stable local ID from a monotonic counter mixed with a
+/// fixed multiplier. No external crate needed — good enough for local IDs.
+fn new_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let n = CTR.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "f{:016x}",
+        n.wrapping_mul(0x9e3779b97f4a7c15)
+            .wrapping_add(0xdead_beef_cafe_0000)
+    )
+}
+
+/// A named filter profile.  The "All" focus is synthetic — the frontend
+/// adds it; only custom focuses are stored here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Focus {
+    /// Stable local ID produced by [`new_id`].
+    pub id: String,
+    pub name: String,
+    /// Emoji or short decorative string shown next to the name.
+    pub icon: Option<String>,
+    /// Rules that gate which notifications this focus shows.
+    pub rules: Rules,
+    /// Lower value → higher in the list.
+    pub sort_order: u32,
+}
+
 /// Root of `config.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct AppConfig {
@@ -66,6 +99,11 @@ struct AppConfig {
     rules: Rules,
     #[serde(default)]
     retention: RetentionConfig,
+    #[serde(default)]
+    focuses: Vec<Focus>,
+    /// `None` means the built-in "All" focus is active.
+    #[serde(default)]
+    active_focus_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +730,154 @@ fn prune_now(app: AppHandle, state: State<Arc<AppState>>) -> Result<usize, Strin
 }
 
 // ---------------------------------------------------------------------------
+// Focus commands
+// ---------------------------------------------------------------------------
+
+/// Return all stored custom focuses (the "All" built-in is added by the frontend).
+#[tauri::command]
+fn get_focuses(app: AppHandle) -> Vec<Focus> {
+    load_config(&app).focuses
+}
+
+/// Return the currently active focus id (`None` = built-in "All").
+#[tauri::command]
+fn get_active_focus(app: AppHandle) -> Option<String> {
+    load_config(&app).active_focus_id
+}
+
+/// Create a new focus with empty rules, append it to the list, save, and
+/// return the new [`Focus`].
+#[tauri::command]
+fn add_focus(app: AppHandle, name: String, icon: Option<String>) -> Result<Focus, String> {
+    let name = name.trim().to_owned();
+    if name.is_empty() {
+        return Err("focus name must not be empty".into());
+    }
+    let mut cfg = load_config(&app);
+    let sort_order = cfg.focuses.len() as u32;
+    let focus = Focus {
+        id: new_id(),
+        name,
+        icon,
+        rules: Rules::default(),
+        sort_order,
+    };
+    cfg.focuses.push(focus.clone());
+    save_config(&app, &cfg)?;
+    Ok(focus)
+}
+
+/// Rename or re-icon an existing focus.
+#[tauri::command]
+fn update_focus(
+    app: AppHandle,
+    id: String,
+    name: Option<String>,
+    icon: Option<String>,
+) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    let focus = cfg
+        .focuses
+        .iter_mut()
+        .find(|f| f.id == id)
+        .ok_or_else(|| format!("focus '{id}' not found"))?;
+    if let Some(n) = name {
+        let n = n.trim().to_owned();
+        if n.is_empty() {
+            return Err("focus name must not be empty".into());
+        }
+        focus.name = n;
+    }
+    // A `None` icon argument means "clear the icon"; use a sentinel Option<Option<String>>
+    // would complicate the API.  Instead we always update if the caller passes icon.
+    // To keep it simple: icon=None here means "don't touch it".  Frontend passes
+    // `Some("")` to clear.
+    if let Some(ic) = icon {
+        focus.icon = if ic.trim().is_empty() { None } else { Some(ic) };
+    }
+    save_config(&app, &cfg)
+}
+
+/// Deep-copy a focus with a new id and " (copy)" appended to the name.
+#[tauri::command]
+fn clone_focus(app: AppHandle, id: String) -> Result<Focus, String> {
+    let mut cfg = load_config(&app);
+    let src = cfg
+        .focuses
+        .iter()
+        .find(|f| f.id == id)
+        .ok_or_else(|| format!("focus '{id}' not found"))?
+        .clone();
+    let sort_order = cfg.focuses.len() as u32;
+    let cloned = Focus {
+        id: new_id(),
+        name: format!("{} (copy)", src.name),
+        icon: src.icon.clone(),
+        rules: src.rules.clone(),
+        sort_order,
+    };
+    cfg.focuses.push(cloned.clone());
+    save_config(&app, &cfg)?;
+    Ok(cloned)
+}
+
+/// Delete a focus.  If it was active, reset active_focus_id to None ("All").
+#[tauri::command]
+fn remove_focus(app: AppHandle, id: String) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    let before = cfg.focuses.len();
+    cfg.focuses.retain(|f| f.id != id);
+    if cfg.focuses.len() == before {
+        return Err(format!("focus '{id}' not found"));
+    }
+    if cfg.active_focus_id.as_deref() == Some(&id) {
+        cfg.active_focus_id = None;
+    }
+    save_config(&app, &cfg)
+}
+
+/// Replace the rules for a focus.
+#[tauri::command]
+fn set_focus_rules(app: AppHandle, id: String, rules: Rules) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    let focus = cfg
+        .focuses
+        .iter_mut()
+        .find(|f| f.id == id)
+        .ok_or_else(|| format!("focus '{id}' not found"))?;
+    focus.rules = rules;
+    save_config(&app, &cfg)
+}
+
+/// Set the active focus.  `None` activates the built-in "All" focus.
+#[tauri::command]
+fn set_active_focus(app: AppHandle, id: Option<String>) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    if let Some(ref focus_id) = id {
+        if !cfg.focuses.iter().any(|f| &f.id == focus_id) {
+            return Err(format!("focus '{focus_id}' not found"));
+        }
+    }
+    cfg.active_focus_id = id;
+    save_config(&app, &cfg)
+}
+
+/// Rewrite sort_order for all focuses based on the supplied ordered id list.
+/// Focuses not in `ids` keep their existing sort_order values (they appear after).
+#[tauri::command]
+fn reorder_focuses(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    for (pos, id) in ids.iter().enumerate() {
+        if let Some(f) = cfg.focuses.iter_mut().find(|f| &f.id == id) {
+            f.sort_order = pos as u32;
+        }
+    }
+    // Re-sort the stored vec for consistency.
+    cfg.focuses.sort_by_key(|f| f.sort_order);
+    save_config(&app, &cfg)
+}
+
+// ---------------------------------------------------------------------------
 // Enum parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -780,6 +966,15 @@ pub fn run() {
             set_retention_producer,
             remove_retention_producer,
             prune_now,
+            get_focuses,
+            get_active_focus,
+            add_focus,
+            update_focus,
+            clone_focus,
+            remove_focus,
+            set_focus_rules,
+            set_active_focus,
+            reorder_focuses,
         ])
         .run(tauri::generate_context!())
         .expect("notifwire app failed to start");

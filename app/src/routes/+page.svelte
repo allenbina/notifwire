@@ -54,12 +54,20 @@
 		per_producer: Record<string, number>;
 	}
 
+	interface Focus {
+		id: string;
+		name: string;
+		icon: string | null;
+		rules: Rules;
+		sort_order: number;
+	}
+
 	// ---------------------------------------------------------------------------
 	// State (Svelte 5 runes)
 	// ---------------------------------------------------------------------------
 
 	type Panel = 'notifications' | 'history' | 'settings';
-	type SettingsTab = 'producers' | 'filters' | 'retention';
+	type SettingsTab = 'producers' | 'filters' | 'retention' | 'focuses';
 
 	let activePanel = $state<Panel>('notifications');
 	let settingsTab = $state<SettingsTab>('producers');
@@ -107,6 +115,30 @@
 	let retentionMaxCountEnabled = $state(false);
 	let retentionMaxCountInput = $state(1000);
 
+	// Focuses
+	let focuses = $state<Focus[]>([]);
+	let activeFocusId = $state<string | null>(null);
+	let focusesError = $state('');
+	let focusesBusy = $state(false);
+
+	// New focus form
+	let newFocusName = $state('');
+	let newFocusIcon = $state('');
+
+	// Inline edit state for a focus in the settings list
+	let editingFocusId = $state<string | null>(null);
+	let editFocusName = $state('');
+	let editFocusIcon = $state('');
+
+	// Per-focus filter editing (expanded focus id)
+	let focusRulesEditing = $state<string | null>(null);
+	// Scratch copy of the rules being edited for a focus
+	let focusRulesDraft = $state<Rules>({ default_mode: 'allow', apps: {}, filters: [] });
+	// Add-filter form for focus rule editing
+	let focusNewFilterField = $state<Filter['field']>('any');
+	let focusNewFilterContains = $state('');
+	let focusNewFilterAction = $state<Filter['action']>('block');
+
 	// ---------------------------------------------------------------------------
 	// Lifecycle
 	// ---------------------------------------------------------------------------
@@ -122,6 +154,9 @@
 
 		// Load initial producer list
 		await refreshProducers();
+
+		// Load focuses
+		await refreshFocuses();
 
 		// Poll health every 3 s
 		healthInterval = setInterval(async () => {
@@ -186,6 +221,15 @@
 		}
 	}
 
+	async function refreshFocuses() {
+		try {
+			focuses = await invoke<Focus[]>('get_focuses');
+			activeFocusId = await invoke<string | null>('get_active_focus');
+		} catch (e) {
+			console.error('get_focuses failed:', e);
+		}
+	}
+
 	// Called when settings tab is opened so data is fresh
 	async function onSettingsTabActivated() {
 		if (settingsTab === 'filters') {
@@ -193,8 +237,62 @@
 			await refreshSeenApps();
 		} else if (settingsTab === 'retention') {
 			await refreshRetention();
+		} else if (settingsTab === 'focuses') {
+			await refreshFocuses();
+			await refreshSeenApps();
 		}
 	}
+
+	// ---------------------------------------------------------------------------
+	// Focus matching (TS reimplementation — avoids round-trips)
+	// ---------------------------------------------------------------------------
+
+	function matchesFilter(f: Filter, n: NotificationItem): boolean {
+		const val =
+			f.field === 'title'
+				? n.title
+				: f.field === 'body'
+					? n.body
+					: f.field === 'appname'
+						? n.app_name
+						: `${n.title} ${n.body} ${n.app_name}`; // 'any'
+		return val.toLowerCase().includes(f.contains.toLowerCase());
+	}
+
+	function matchesFocus(n: NotificationItem, focus: Focus | null): boolean {
+		if (!focus) return true; // "All"
+		const r = focus.rules;
+		// 1. App gate
+		const appRule = r.apps[n.app_name];
+		if (appRule === false) return false;
+		if (appRule === true) {
+			/* pass app gate */
+		} else if (r.default_mode === 'block') return false;
+		// 2. Block filters — any match suppresses
+		for (const f of r.filters) {
+			if (f.action === 'block' && matchesFilter(f, n)) return false;
+		}
+		// 3. Allow filters — if any exist, at least one must match
+		const allowFilters = r.filters.filter((f) => f.action === 'allow');
+		if (allowFilters.length > 0 && !allowFilters.some((f) => matchesFilter(f, n))) return false;
+		return true;
+	}
+
+	// Adapt HistoryItem to the shape matchesFocus expects
+	function historyToNotif(h: HistoryItem): NotificationItem {
+		return { title: h.title, body: h.body, app_name: h.app_name, timestamp_ms: 0 };
+	}
+
+	// The active Focus object (null = "All")
+	let activeFocus = $derived(focuses.find((f) => f.id === activeFocusId) ?? null);
+
+	// Filtered views
+	let visibleNotifications = $derived(
+		notifications.filter((n) => matchesFocus(n, activeFocus))
+	);
+	let visibleHistory = $derived(
+		historyItems.filter((h) => matchesFocus(historyToNotif(h), activeFocus))
+	);
 
 	// ---------------------------------------------------------------------------
 	// History actions
@@ -449,6 +547,166 @@
 	});
 
 	// ---------------------------------------------------------------------------
+	// Settings actions — focuses
+	// ---------------------------------------------------------------------------
+
+	async function handleAddFocus() {
+		const name = newFocusName.trim();
+		if (!name) return;
+		focusesError = '';
+		focusesBusy = true;
+		try {
+			await invoke<Focus>('add_focus', { name, icon: newFocusIcon.trim() || null });
+			newFocusName = '';
+			newFocusIcon = '';
+			await refreshFocuses();
+		} catch (e) {
+			focusesError = String(e);
+		} finally {
+			focusesBusy = false;
+		}
+	}
+
+	async function handleCloneFocus(id: string) {
+		focusesError = '';
+		try {
+			await invoke<Focus>('clone_focus', { id });
+			await refreshFocuses();
+		} catch (e) {
+			focusesError = String(e);
+		}
+	}
+
+	async function handleRemoveFocus(id: string) {
+		focusesError = '';
+		try {
+			await invoke('remove_focus', { id });
+			await refreshFocuses();
+		} catch (e) {
+			focusesError = String(e);
+		}
+	}
+
+	function startEditFocus(focus: Focus) {
+		editingFocusId = focus.id;
+		editFocusName = focus.name;
+		editFocusIcon = focus.icon ?? '';
+	}
+
+	function cancelEditFocus() {
+		editingFocusId = null;
+		editFocusName = '';
+		editFocusIcon = '';
+	}
+
+	async function saveEditFocus(id: string) {
+		const name = editFocusName.trim();
+		if (!name) return;
+		focusesError = '';
+		try {
+			await invoke('update_focus', {
+				id,
+				name,
+				icon: editFocusIcon.trim() || ''  // empty string = clear icon
+			});
+			cancelEditFocus();
+			await refreshFocuses();
+		} catch (e) {
+			focusesError = String(e);
+		}
+	}
+
+	// Open inline rules editor for a focus
+	function openFocusRulesEditor(focus: Focus) {
+		focusRulesEditing = focus.id;
+		// Deep copy the rules
+		focusRulesDraft = JSON.parse(JSON.stringify(focus.rules)) as Rules;
+		focusNewFilterField = 'any';
+		focusNewFilterContains = '';
+		focusNewFilterAction = 'block';
+	}
+
+	function closeFocusRulesEditor() {
+		focusRulesEditing = null;
+	}
+
+	async function saveFocusRules(id: string) {
+		focusesError = '';
+		try {
+			await invoke('set_focus_rules', { id, rules: focusRulesDraft });
+			closeFocusRulesEditor();
+			await refreshFocuses();
+		} catch (e) {
+			focusesError = String(e);
+		}
+	}
+
+	function focusDraftAppRule(app_name: string): AppRuleChoice {
+		const v = focusRulesDraft.apps[app_name];
+		if (v === true) return 'allow';
+		if (v === false) return 'block';
+		return 'default';
+	}
+
+	function handleFocusDraftAppRule(app_name: string, choice: AppRuleChoice) {
+		if (choice === 'default') {
+			delete focusRulesDraft.apps[app_name];
+			focusRulesDraft = { ...focusRulesDraft };
+		} else {
+			focusRulesDraft = {
+				...focusRulesDraft,
+				apps: { ...focusRulesDraft.apps, [app_name]: choice === 'allow' }
+			};
+		}
+	}
+
+	function handleFocusDraftAddFilter() {
+		const contains = focusNewFilterContains.trim();
+		if (!contains) return;
+		focusRulesDraft = {
+			...focusRulesDraft,
+			filters: [
+				...focusRulesDraft.filters,
+				{ field: focusNewFilterField, contains, action: focusNewFilterAction }
+			]
+		};
+		focusNewFilterContains = '';
+	}
+
+	function handleFocusDraftRemoveFilter(index: number) {
+		focusRulesDraft = {
+			...focusRulesDraft,
+			filters: focusRulesDraft.filters.filter((_, i) => i !== index)
+		};
+	}
+
+	// All app names for focus rules editor: union of seenApps + existing rule keys
+	let allAppNamesForFocus = $derived(
+		[...new Set([...seenApps, ...Object.keys(focusRulesDraft.apps)])].sort()
+	);
+
+	// ---------------------------------------------------------------------------
+	// Focus sidebar actions
+	// ---------------------------------------------------------------------------
+
+	async function handleSwitchFocus(id: string | null) {
+		try {
+			await invoke('set_active_focus', { id });
+			activeFocusId = id;
+		} catch (e) {
+			console.error('set_active_focus failed:', e);
+		}
+	}
+
+	// Sorted focuses for sidebar display
+	let sortedFocuses = $derived([...focuses].sort((a, b) => a.sort_order - b.sort_order));
+
+	// Label for the active focus
+	let activeFocusLabel = $derived(
+		activeFocusId === null ? 'All' : (focuses.find((f) => f.id === activeFocusId)?.name ?? 'All')
+	);
+
+	// ---------------------------------------------------------------------------
 	// Helpers
 	// ---------------------------------------------------------------------------
 
@@ -483,9 +741,50 @@
 </script>
 
 <div class="app-shell">
-	<!-- Left nav -->
+	<!-- Focuses sidebar -->
+	<aside class="focuses-sidebar">
+		<div class="focuses-brand">notifwire</div>
+		<div class="focuses-label">Focus</div>
+
+		<!-- Built-in "All" focus -->
+		<button
+			class="focus-item"
+			class:active={activeFocusId === null}
+			onclick={() => handleSwitchFocus(null)}
+		>
+			<span class="focus-icon">✦</span>
+			<span class="focus-name">All</span>
+		</button>
+
+		<!-- User focuses -->
+		{#each sortedFocuses as f (f.id)}
+			<button
+				class="focus-item"
+				class:active={activeFocusId === f.id}
+				onclick={() => handleSwitchFocus(f.id)}
+			>
+				{#if f.icon}
+					<span class="focus-icon">{f.icon}</span>
+				{:else}
+					<span class="focus-icon focus-icon-empty">○</span>
+				{/if}
+				<span class="focus-name">{f.name}</span>
+			</button>
+		{/each}
+
+		<div class="focuses-footer">
+			<button
+				class="btn-add-focus"
+				title="Manage focuses"
+				onclick={() => { activePanel = 'settings'; settingsTab = 'focuses'; onSettingsTabActivated(); }}
+			>
+				+ Focuses
+			</button>
+		</div>
+	</aside>
+
+	<!-- Nav sidebar -->
 	<nav class="sidebar">
-		<div class="brand">notifwire</div>
 		<button
 			class="nav-item"
 			class:active={activePanel === 'notifications'}
@@ -515,12 +814,21 @@
 		<!-- Notifications panel -->
 		{#if activePanel === 'notifications'}
 			<section class="panel">
-				<h2 class="panel-title">Notifications</h2>
-				{#if notifications.length === 0}
-					<p class="empty">No notifications yet.</p>
+				<h2 class="panel-title">
+					Notifications
+					{#if activeFocusId !== null}
+						<span class="focus-badge">{activeFocusLabel}</span>
+					{/if}
+				</h2>
+				{#if visibleNotifications.length === 0}
+					<p class="empty">
+						{notifications.length === 0
+							? 'No notifications yet.'
+							: 'No notifications match the active focus.'}
+					</p>
 				{:else}
 					<ul class="notif-list">
-						{#each notifications as n (n.timestamp_ms + n.title)}
+						{#each visibleNotifications as n (n.timestamp_ms + n.title)}
 							<li class="notification-item">
 								<div class="notif-header">
 									<span class="app-name">{n.app_name}</span>
@@ -539,7 +847,12 @@
 		<!-- History panel -->
 		{:else if activePanel === 'history'}
 			<section class="panel">
-				<h2 class="panel-title">History</h2>
+				<h2 class="panel-title">
+					History
+					{#if activeFocusId !== null}
+						<span class="focus-badge">{activeFocusLabel}</span>
+					{/if}
+				</h2>
 
 				<div class="history-toolbar">
 					<input
@@ -568,11 +881,15 @@
 
 				{#if historyLoading && historyItems.length === 0}
 					<p class="empty">Loading…</p>
-				{:else if historyItems.length === 0}
-					<p class="empty">No notifications in history.</p>
+				{:else if visibleHistory.length === 0}
+					<p class="empty">
+						{historyItems.length === 0
+							? 'No notifications in history.'
+							: 'No history matches the active focus.'}
+					</p>
 				{:else}
 					<ul class="notif-list">
-						{#each historyItems as n (n.id)}
+						{#each visibleHistory as n (n.id)}
 							<li class="notification-item">
 								<div class="notif-header">
 									<span class="app-name">{n.app_name}</span>
@@ -626,6 +943,13 @@
 						onclick={async () => { settingsTab = 'retention'; await refreshRetention(); await refreshProducers(); }}
 					>
 						Retention
+					</button>
+					<button
+						class="settings-tab"
+						class:active={settingsTab === 'focuses'}
+						onclick={async () => { settingsTab = 'focuses'; await refreshFocuses(); await refreshSeenApps(); }}
+					>
+						Focuses
 					</button>
 				</div>
 
@@ -828,7 +1152,7 @@
 					</div>
 
 				<!-- Retention sub-panel -->
-				{:else}
+				{:else if settingsTab === 'retention'}
 					<div class="filters-panel">
 
 						<!-- Global default -->
@@ -932,6 +1256,215 @@
 						{/if}
 
 					</div>
+
+				<!-- Focuses sub-panel -->
+				{:else}
+					<div class="filters-panel">
+
+						<div class="filters-section">
+							<h3 class="section-title">Focuses</h3>
+							<p class="section-hint">Focuses are named filter profiles. Switch between them in the left sidebar. "All" always shows everything.</p>
+
+							{#if sortedFocuses.length === 0}
+								<p class="empty">No custom focuses yet.</p>
+							{:else}
+								<ul class="focus-list">
+									{#each sortedFocuses as focus (focus.id)}
+										<li class="focus-list-item">
+											{#if editingFocusId === focus.id}
+												<!-- Inline edit row -->
+												<div class="focus-edit-row">
+													<input
+														type="text"
+														bind:value={editFocusIcon}
+														placeholder="icon (emoji)"
+														class="field-icon"
+														maxlength="4"
+													/>
+													<input
+														type="text"
+														bind:value={editFocusName}
+														placeholder="Focus name"
+														class="field-focus-name"
+													/>
+													<button class="btn-add btn-sm" onclick={() => saveEditFocus(focus.id)}>Save</button>
+													<button class="btn-cancel btn-sm" onclick={cancelEditFocus}>Cancel</button>
+												</div>
+											{:else}
+												<!-- Display row -->
+												<div class="focus-display-row">
+													<span class="focus-list-icon">{focus.icon ?? '○'}</span>
+													<span class="focus-list-name">{focus.name}</span>
+													{#if activeFocusId === focus.id}
+														<span class="badge badge-active">active</span>
+													{/if}
+													<div class="focus-actions">
+														<button class="btn-action" onclick={() => startEditFocus(focus)} title="Rename">✎</button>
+														<button class="btn-action" onclick={() => {
+															if (focusRulesEditing === focus.id) {
+																closeFocusRulesEditor();
+															} else {
+																openFocusRulesEditor(focus);
+															}
+														}} title="Edit filters">
+															{focusRulesEditing === focus.id ? '▲' : '▼'} Filters
+														</button>
+														<button class="btn-action" onclick={() => handleCloneFocus(focus.id)} title="Clone">⎘</button>
+														<button class="btn-remove" onclick={() => handleRemoveFocus(focus.id)} title="Delete">✕</button>
+													</div>
+												</div>
+											{/if}
+
+											<!-- Inline rules editor for this focus -->
+											{#if focusRulesEditing === focus.id}
+												<div class="focus-rules-editor">
+													<!-- Default mode -->
+													<div class="focus-rules-section">
+														<span class="focus-rules-label">Default mode</span>
+														<div class="mode-row">
+															<label class="mode-option">
+																<input
+																	type="radio"
+																	name="focus_default_mode_{focus.id}"
+																	value="allow"
+																	checked={focusRulesDraft.default_mode === 'allow'}
+																	onchange={() => { focusRulesDraft = { ...focusRulesDraft, default_mode: 'allow' }; }}
+																/>
+																<span>Allow all</span>
+															</label>
+															<label class="mode-option">
+																<input
+																	type="radio"
+																	name="focus_default_mode_{focus.id}"
+																	value="block"
+																	checked={focusRulesDraft.default_mode === 'block'}
+																	onchange={() => { focusRulesDraft = { ...focusRulesDraft, default_mode: 'block' }; }}
+																/>
+																<span>Block all</span>
+															</label>
+														</div>
+													</div>
+
+													<!-- Per-app rules -->
+													{#if allAppNamesForFocus.length > 0}
+														<div class="focus-rules-section">
+															<span class="focus-rules-label">Apps</span>
+															<ul class="app-list">
+																{#each allAppNamesForFocus as name (name)}
+																	{@const choice = focusDraftAppRule(name)}
+																	<li class="app-row">
+																		<span class="app-row-name">{name}</span>
+																		<div class="app-rule-buttons">
+																			<button
+																				class="rule-btn"
+																				class:active-allow={choice === 'allow'}
+																				onclick={() => handleFocusDraftAppRule(name, 'allow')}
+																			>Allow</button>
+																			<button
+																				class="rule-btn"
+																				class:active-default={choice === 'default'}
+																				onclick={() => handleFocusDraftAppRule(name, 'default')}
+																			>Default</button>
+																			<button
+																				class="rule-btn"
+																				class:active-block={choice === 'block'}
+																				onclick={() => handleFocusDraftAppRule(name, 'block')}
+																			>Block</button>
+																		</div>
+																	</li>
+																{/each}
+															</ul>
+														</div>
+													{/if}
+
+													<!-- Keyword filters -->
+													<div class="focus-rules-section">
+														<span class="focus-rules-label">Keyword filters</span>
+														{#if focusRulesDraft.filters.length === 0}
+															<p class="empty" style="margin:0;">No keyword filters.</p>
+														{:else}
+															<ul class="kw-list">
+																{#each focusRulesDraft.filters as f, i (i)}
+																	<li class="kw-row">
+																		<span class="badge field-badge">{fieldLabels[f.field]}</span>
+																		<span class="kw-contains">contains</span>
+																		<span class="kw-keyword">"{f.contains}"</span>
+																		<span class="badge" class:badge-allow={f.action === 'allow'} class:badge-block={f.action === 'block'}>
+																			{f.action}
+																		</span>
+																		<button class="btn-remove" onclick={() => handleFocusDraftRemoveFilter(i)} title="Remove">✕</button>
+																	</li>
+																{/each}
+															</ul>
+														{/if}
+														<div class="kw-add-fields" style="margin-top:0.4rem;">
+															<select bind:value={focusNewFilterField} class="field-select">
+																<option value="title">Title</option>
+																<option value="body">Body</option>
+																<option value="appname">App Name</option>
+																<option value="any">Any</option>
+															</select>
+															<input
+																type="text"
+																bind:value={focusNewFilterContains}
+																placeholder="keyword"
+																class="field-keyword"
+															/>
+															<select bind:value={focusNewFilterAction} class="field-select">
+																<option value="block">Block</option>
+																<option value="allow">Allow</option>
+															</select>
+															<button
+																class="btn-add btn-sm"
+																onclick={handleFocusDraftAddFilter}
+																disabled={!focusNewFilterContains.trim()}
+															>Add</button>
+														</div>
+													</div>
+
+													<div class="focus-rules-footer">
+														<button class="btn-add btn-sm" onclick={() => saveFocusRules(focus.id)}>Save rules</button>
+														<button class="btn-cancel btn-sm" onclick={closeFocusRulesEditor}>Discard</button>
+													</div>
+												</div>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+
+						<!-- Add focus form -->
+						<div class="add-form">
+							<h3 class="add-title">Add focus</h3>
+							<div class="add-fields">
+								<input
+									type="text"
+									bind:value={newFocusIcon}
+									placeholder="icon (emoji)"
+									class="field-icon"
+									maxlength="4"
+								/>
+								<input
+									type="text"
+									bind:value={newFocusName}
+									placeholder="Focus name"
+									class="field-focus-name"
+								/>
+								<button
+									class="btn-add"
+									onclick={handleAddFocus}
+									disabled={focusesBusy || !newFocusName.trim()}
+								>
+									{focusesBusy ? 'Adding…' : 'Add'}
+								</button>
+							</div>
+							{#if focusesError}
+								<p class="add-error">{focusesError}</p>
+							{/if}
+						</div>
+
+					</div>
 				{/if}
 
 			</section>
@@ -956,10 +1489,110 @@
 		overflow: hidden;
 	}
 
-	/* Sidebar */
+	/* Focuses sidebar */
+
+	.focuses-sidebar {
+		width: 130px;
+		flex-shrink: 0;
+		background: #0d1018;
+		border-right: 1px solid #1c1f2e;
+		display: flex;
+		flex-direction: column;
+		padding: 0;
+		overflow-y: auto;
+	}
+
+	.focuses-brand {
+		font-size: 0.82rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		padding: 0.9rem 0.75rem 0.6rem;
+		border-bottom: 1px solid #1c1f2e;
+		color: #e6e6e6;
+	}
+
+	.focuses-label {
+		font-size: 0.65rem;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: #4b526e;
+		padding: 0.55rem 0.75rem 0.2rem;
+	}
+
+	.focus-item {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		background: none;
+		border: none;
+		color: #7a849e;
+		font-size: 0.82rem;
+		text-align: left;
+		padding: 0.38rem 0.75rem;
+		cursor: pointer;
+		width: 100%;
+		transition: color 0.12s, background 0.12s;
+		border-left: 2px solid transparent;
+		line-height: 1.3;
+	}
+
+	.focus-item:hover {
+		color: #c0c8e0;
+		background: #131620;
+	}
+
+	.focus-item.active {
+		color: #e6e6e6;
+		background: #161a28;
+		border-left-color: #3b82f6;
+	}
+
+	.focus-icon {
+		font-size: 0.88rem;
+		flex-shrink: 0;
+		line-height: 1;
+	}
+
+	.focus-icon-empty {
+		color: #3a3f55;
+	}
+
+	.focus-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.focuses-footer {
+		margin-top: auto;
+		padding: 0.55rem 0.75rem;
+		border-top: 1px solid #1c1f2e;
+	}
+
+	.btn-add-focus {
+		background: none;
+		border: 1px solid #22263a;
+		color: #5a6480;
+		font-size: 0.75rem;
+		padding: 0.3rem 0.6rem;
+		border-radius: 4px;
+		cursor: pointer;
+		width: 100%;
+		text-align: center;
+		transition: color 0.12s, background 0.12s, border-color 0.12s;
+	}
+
+	.btn-add-focus:hover {
+		color: #e6e6e6;
+		background: #1a1d28;
+		border-color: #3b82f6;
+	}
+
+	/* Nav sidebar */
 
 	.sidebar {
-		width: 140px;
+		width: 120px;
 		flex-shrink: 0;
 		background: #13161d;
 		border-right: 1px solid #22263a;
@@ -967,15 +1600,6 @@
 		flex-direction: column;
 		padding: 1rem 0;
 		gap: 0.25rem;
-	}
-
-	.brand {
-		font-size: 1rem;
-		font-weight: 700;
-		letter-spacing: -0.02em;
-		padding: 0 1rem 0.75rem;
-		border-bottom: 1px solid #22263a;
-		margin-bottom: 0.5rem;
 	}
 
 	.nav-item {
@@ -1020,6 +1644,19 @@
 		font-size: 1.05rem;
 		font-weight: 600;
 		margin: 0 0 0.25rem;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.focus-badge {
+		font-size: 0.72rem;
+		font-weight: 500;
+		padding: 0.12rem 0.5rem;
+		border-radius: 10px;
+		background: #1e2845;
+		color: #93c5fd;
+		border: 1px solid #2d4070;
 	}
 
 	/* Notifications list */
@@ -1357,6 +1994,24 @@
 		cursor: default;
 	}
 
+	.btn-cancel {
+		padding: 0.42rem 1rem;
+		background: #1e2232;
+		color: #a0a8be;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		font-size: 0.88rem;
+		cursor: pointer;
+		white-space: nowrap;
+		flex-shrink: 0;
+		transition: background 0.15s, color 0.15s;
+	}
+
+	.btn-cancel:hover {
+		background: #22263a;
+		color: #e6e6e6;
+	}
+
 	.btn-sm {
 		padding: 0.3rem 0.7rem;
 		font-size: 0.82rem;
@@ -1421,6 +2076,13 @@
 		font-weight: 600;
 		margin: 0;
 		color: #a0a8be;
+	}
+
+	.section-hint {
+		font-size: 0.78rem;
+		color: #5a6480;
+		margin: 0;
+		line-height: 1.4;
 	}
 
 	.section-header {
@@ -1589,6 +2251,13 @@
 		color: #fca5a5;
 	}
 
+	.badge-active {
+		background: #1a3a1a;
+		color: #86efac;
+		font-size: 0.68rem;
+		padding: 0.1rem 0.4rem;
+	}
+
 	.kw-contains {
 		font-size: 0.78rem;
 		color: #6b7280;
@@ -1712,6 +2381,145 @@
 		border: 1px solid #2e3240;
 		border-radius: 5px;
 		padding: 0.35rem 0.6rem;
+	}
+
+	/* Focuses settings panel */
+
+	.focus-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.focus-list-item {
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 6px;
+		overflow: hidden;
+	}
+
+	.focus-display-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.5rem 0.75rem;
+	}
+
+	.focus-edit-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.5rem 0.75rem;
+		flex-wrap: wrap;
+	}
+
+	.focus-list-icon {
+		font-size: 1rem;
+		flex-shrink: 0;
+		line-height: 1;
+	}
+
+	.focus-list-name {
+		flex: 1;
+		font-size: 0.9rem;
+		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.focus-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.2rem;
+		flex-shrink: 0;
+	}
+
+	.btn-action {
+		background: none;
+		border: 1px solid #2e3240;
+		color: #6b7280;
+		font-size: 0.75rem;
+		cursor: pointer;
+		padding: 0.2rem 0.45rem;
+		border-radius: 4px;
+		line-height: 1;
+		transition: color 0.12s, background 0.12s;
+		white-space: nowrap;
+	}
+
+	.btn-action:hover {
+		color: #e6e6e6;
+		background: #1e2232;
+		border-color: #3b82f6;
+	}
+
+	.field-icon {
+		width: 52px;
+		padding: 0.42rem 0.4rem;
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		color: #e6e6e6;
+		font-size: 1.1rem;
+		text-align: center;
+		flex-shrink: 0;
+	}
+
+	.field-icon:focus {
+		outline: none;
+		border-color: #3b82f6;
+	}
+
+	.field-focus-name {
+		flex: 1;
+		min-width: 120px;
+		padding: 0.42rem 0.65rem;
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		color: #e6e6e6;
+		font-size: 0.88rem;
+	}
+
+	.field-focus-name:focus {
+		outline: none;
+		border-color: #3b82f6;
+	}
+
+	/* Focus inline rules editor */
+
+	.focus-rules-editor {
+		border-top: 1px solid #22263a;
+		background: #0f1117;
+		padding: 0.75rem 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+
+	.focus-rules-section {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.focus-rules-label {
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: #6b7280;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.focus-rules-footer {
+		display: flex;
+		gap: 0.5rem;
+		padding-top: 0.25rem;
+		border-top: 1px solid #1c1f2e;
 	}
 
 	/* Misc */
