@@ -1,6 +1,8 @@
 //! notifwire Tauri app — backend entry point.
 //!
 //! Slice 3G: Menubar / System Tray — hide-to-tray, tray menu, panel navigation.
+//! Slice 3H: Import / Export — full config round-trip via JSON copy-paste.
+//! Slice 3I: Custom CSS Theming — injected into webview with live preview.
 //!
 //! - Loads `config.json` from `app_config_dir` on startup.
 //! - Auto-connects all enabled producers with persisted rules.
@@ -199,6 +201,9 @@ struct AppConfig {
     active_focus_id: Option<String>,
     #[serde(default)]
     schedules: Vec<FocusSchedule>,
+    /// Optional custom CSS injected into the webview (Joplin-style theming).
+    #[serde(default)]
+    custom_css: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1085,69 @@ fn get_scheduled_focus(app: AppHandle, weekday: String, hhmm: u16) -> Option<Str
 }
 
 // ---------------------------------------------------------------------------
+// Import / Export commands (3H)
+// ---------------------------------------------------------------------------
+
+/// Serialize the full config to pretty-printed JSON and return it as a string.
+#[tauri::command]
+fn export_config(app: AppHandle) -> Result<String, String> {
+    let cfg = load_config(&app);
+    serde_json::to_string_pretty(&cfg).map_err(|e| format!("config serialize failed: {e}"))
+}
+
+/// Parse `json` into an `AppConfig`, save it to disk, and reconnect all
+/// enabled producers from the new config.  Does NOT restart the app.
+#[tauri::command]
+fn import_config(app: AppHandle, state: State<Arc<AppState>>, json: String) -> Result<(), String> {
+    // Parse first so we fail fast before touching disk.
+    let new_cfg: AppConfig =
+        serde_json::from_str(&json).map_err(|e| format!("invalid config JSON: {e}"))?;
+
+    save_config(&app, &new_cfg)?;
+
+    // Disconnect every currently connected producer.
+    let urls_to_drop: Vec<String> = {
+        let conns = state
+            .connections
+            .lock()
+            .expect("connections mutex poisoned");
+        conns.keys().cloned().collect()
+    };
+    for url in &urls_to_drop {
+        disconnect_one(&state, url);
+    }
+
+    // Connect all enabled producers from the new config.
+    for entry in &new_cfg.producers {
+        if entry.enabled {
+            if let Err(e) = connect_one(&app, &state, &entry.url, new_cfg.rules.clone()) {
+                log::warn!("import_config connect failed for {}: {e}", entry.url);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Custom CSS commands (3I)
+// ---------------------------------------------------------------------------
+
+/// Return the stored custom CSS string (empty string if none set).
+#[tauri::command]
+fn get_custom_css(app: AppHandle) -> String {
+    load_config(&app).custom_css
+}
+
+/// Persist a new custom CSS string to config.
+#[tauri::command]
+fn set_custom_css(app: AppHandle, css: String) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    cfg.custom_css = css;
+    save_config(&app, &cfg)
+}
+
+// ---------------------------------------------------------------------------
 // Enum parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -1290,6 +1358,10 @@ pub fn run() {
             update_schedule,
             remove_schedule,
             get_scheduled_focus,
+            export_config,
+            import_config,
+            get_custom_css,
+            set_custom_css,
         ])
         .run(tauri::generate_context!())
         .expect("notifwire app failed to start");

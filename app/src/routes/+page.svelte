@@ -82,7 +82,7 @@
 	// ---------------------------------------------------------------------------
 
 	type Panel = 'notifications' | 'history' | 'settings';
-	type SettingsTab = 'producers' | 'filters' | 'retention' | 'focuses';
+	type SettingsTab = 'producers' | 'filters' | 'retention' | 'focuses' | 'import-export' | 'theme';
 
 	let activePanel = $state<Panel>('notifications');
 	let settingsTab = $state<SettingsTab>('producers');
@@ -167,6 +167,20 @@
 	let editSchedEnd = $state('07:00');
 	let editSchedFocusId = $state('');
 
+	// Import / Export (3H)
+	let exportJson = $state('');
+	let exportCharCount = $derived(exportJson.length);
+	let importJson = $state('');
+	let importError = $state('');
+	let importSuccess = $state('');
+	let importBusy = $state(false);
+
+	// Custom CSS theming (3I)
+	let customCssDraft = $state('');
+	let customCssError = $state('');
+	let customCssSuccess = $state('');
+	let customCssBusy = $state(false);
+
 	// Manual override: if user clicked a focus in this session, don't auto-switch
 	// until the scheduled focus naturally changes to something different.
 	let manualOverrideFocusId = $state<string | null | undefined>(undefined);
@@ -190,7 +204,27 @@
 	let healthInterval: ReturnType<typeof setInterval> | null = null;
 	let scheduleInterval: ReturnType<typeof setInterval> | null = null;
 
+	/** Inject or update the custom CSS <style> tag in the document head. */
+	function applyCustomCss(css: string) {
+		let tag = document.getElementById('custom-css') as HTMLStyleElement | null;
+		if (!tag) {
+			tag = document.createElement('style');
+			tag.id = 'custom-css';
+			document.head.appendChild(tag);
+		}
+		tag.textContent = css;
+	}
+
 	onMount(async () => {
+		// Inject saved custom CSS immediately on mount.
+		try {
+			const css = await invoke<string>('get_custom_css');
+			customCssDraft = css;
+			applyCustomCss(css);
+		} catch (e) {
+			console.error('get_custom_css failed:', e);
+		}
+
 		// Listen for incoming notifications
 		unlisten = await listen<NotificationItem>('notification', (event) => {
 			notifications = [event.payload, ...notifications].slice(0, 100);
@@ -961,6 +995,80 @@
 		return focuses.find((f) => f.id === id)?.name ?? id;
 	}
 
+	// ---------------------------------------------------------------------------
+	// Import / Export actions (3H)
+	// ---------------------------------------------------------------------------
+
+	async function handleExportConfig() {
+		try {
+			exportJson = await invoke<string>('export_config');
+			// Auto-select the textarea content for easy copying (deferred so DOM updates first).
+			await Promise.resolve();
+			const ta = document.getElementById('export-textarea') as HTMLTextAreaElement | null;
+			ta?.select();
+		} catch (e) {
+			exportJson = `Error: ${e}`;
+		}
+	}
+
+	async function handleImportConfig() {
+		const json = importJson.trim();
+		if (!json) return;
+		importError = '';
+		importSuccess = '';
+		importBusy = true;
+		try {
+			await invoke('import_config', { json });
+			importSuccess = 'Config imported successfully.';
+			importJson = '';
+			// Reload all state to reflect the new config.
+			await refreshProducers();
+			await refreshFilters();
+			await refreshRetention();
+			await refreshFocuses();
+			await refreshSchedules();
+		} catch (e) {
+			importError = String(e);
+		} finally {
+			importBusy = false;
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Custom CSS actions (3I)
+	// ---------------------------------------------------------------------------
+
+	async function handleApplyCss() {
+		customCssError = '';
+		customCssSuccess = '';
+		customCssBusy = true;
+		try {
+			await invoke('set_custom_css', { css: customCssDraft });
+			applyCustomCss(customCssDraft);
+			customCssSuccess = 'CSS applied.';
+		} catch (e) {
+			customCssError = String(e);
+		} finally {
+			customCssBusy = false;
+		}
+	}
+
+	async function handleResetCss() {
+		customCssError = '';
+		customCssSuccess = '';
+		customCssBusy = true;
+		try {
+			await invoke('set_custom_css', { css: '' });
+			customCssDraft = '';
+			applyCustomCss('');
+			customCssSuccess = 'CSS cleared.';
+		} catch (e) {
+			customCssError = String(e);
+		} finally {
+			customCssBusy = false;
+		}
+	}
+
 	// Sorted focuses for sidebar display
 	let sortedFocuses = $derived([...focuses].sort((a, b) => a.sort_order - b.sort_order));
 
@@ -1213,6 +1321,20 @@
 						onclick={async () => { settingsTab = 'focuses'; await refreshFocuses(); await refreshSeenApps(); }}
 					>
 						Focuses
+					</button>
+					<button
+						class="settings-tab"
+						class:active={settingsTab === 'import-export'}
+						onclick={() => { settingsTab = 'import-export'; exportJson = ''; importJson = ''; importError = ''; importSuccess = ''; }}
+					>
+						Import / Export
+					</button>
+					<button
+						class="settings-tab"
+						class:active={settingsTab === 'theme'}
+						onclick={() => { settingsTab = 'theme'; }}
+					>
+						Theme
 					</button>
 				</div>
 
@@ -1521,7 +1643,7 @@
 					</div>
 
 				<!-- Focuses sub-panel -->
-				{:else}
+				{:else if settingsTab === 'focuses'}
 					<div class="filters-panel">
 
 						<div class="filters-section">
@@ -1835,6 +1957,98 @@
 						</div>
 
 					</div>
+
+				<!-- Import / Export sub-panel (3H) -->
+				{:else if settingsTab === 'import-export'}
+					<div class="filters-panel">
+
+						<!-- Export section -->
+						<div class="filters-section">
+							<h3 class="section-title">Export config</h3>
+							<p class="section-hint">Export your full configuration (producers, rules, focuses, schedules, retention) as JSON. Copy the text below to back it up or move it to another machine.</p>
+							<div>
+								<button class="btn-add btn-sm" onclick={handleExportConfig}>
+									Export config
+								</button>
+							</div>
+							{#if exportJson}
+								<p class="export-char-count">{exportCharCount} characters</p>
+								<textarea
+									id="export-textarea"
+									class="config-textarea"
+									readonly
+									value={exportJson}
+								></textarea>
+							{/if}
+						</div>
+
+						<!-- Import section -->
+						<div class="filters-section">
+							<h3 class="section-title">Import config</h3>
+							<p class="section-hint">Paste a previously exported JSON config below. This will overwrite your current configuration and reconnect all producers.</p>
+							<textarea
+								class="config-textarea"
+								placeholder="Paste config JSON here…"
+								bind:value={importJson}
+							></textarea>
+							<div class="import-footer">
+								<button
+									class="btn-add btn-sm"
+									onclick={handleImportConfig}
+									disabled={importBusy || !importJson.trim()}
+								>
+									{importBusy ? 'Importing…' : 'Import config'}
+								</button>
+							</div>
+							{#if importError}
+								<p class="add-error">{importError}</p>
+							{/if}
+							{#if importSuccess}
+								<p class="import-success">{importSuccess}</p>
+							{/if}
+						</div>
+
+					</div>
+
+				<!-- Theme sub-panel (3I) -->
+				{:else if settingsTab === 'theme'}
+					<div class="filters-panel">
+
+						<div class="filters-section">
+							<h3 class="section-title">Custom CSS</h3>
+							<p class="section-hint">Paste custom CSS to override any app styles. Changes apply live.</p>
+							<textarea
+								class="config-textarea css-textarea"
+								placeholder="/* e.g. body { font-size: 14px; } */"
+								bind:value={customCssDraft}
+								spellcheck="false"
+							></textarea>
+							<div class="theme-footer">
+								<button
+									class="btn-add btn-sm"
+									onclick={handleApplyCss}
+									disabled={customCssBusy}
+								>
+									{customCssBusy ? 'Applying…' : 'Apply'}
+								</button>
+								<button
+									class="btn-cancel btn-sm"
+									onclick={handleResetCss}
+									disabled={customCssBusy}
+								>
+									Reset
+								</button>
+							</div>
+							{#if customCssError}
+								<p class="add-error">{customCssError}</p>
+							{/if}
+							{#if customCssSuccess}
+								<p class="import-success">{customCssSuccess}</p>
+							{/if}
+						</div>
+
+					</div>
+
 				{/if}
 
 			</section>
@@ -3044,5 +3258,50 @@
 	.time-input:focus {
 		outline: none;
 		border-color: #3b82f6;
+	}
+
+	/* Import / Export + Theme panels */
+
+	.config-textarea {
+		width: 100%;
+		min-height: 200px;
+		padding: 0.6rem 0.75rem;
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		color: #e6e6e6;
+		font-size: 0.82rem;
+		font-family: monospace;
+		resize: vertical;
+		box-sizing: border-box;
+		line-height: 1.5;
+	}
+
+	.config-textarea:focus {
+		outline: none;
+		border-color: #3b82f6;
+	}
+
+	.css-textarea {
+		min-height: 260px;
+	}
+
+	.export-char-count {
+		font-size: 0.75rem;
+		color: #6b7280;
+		margin: 0;
+	}
+
+	.import-footer,
+	.theme-footer {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+	}
+
+	.import-success {
+		color: #86efac;
+		font-size: 0.82rem;
+		margin: 0;
 	}
 </style>
