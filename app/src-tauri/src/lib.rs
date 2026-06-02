@@ -7,9 +7,7 @@
 //!   - Emit a `notification` event to the frontend window
 //!   - Report live connection health via `get_health`
 
-use notifwire_consumer::{
-    consumer_health, Pipeline, ReconnectPolicy, StatusHandle,
-};
+use notifwire_consumer::{consumer_health, Pipeline, ReconnectPolicy, StatusHandle};
 use notifwire_consumer_win::WindowsToastSink;
 use notifwire_core::{
     ConsumerHealth, DisplayError, Notification, NotificationSink, Rules, SelfChecks,
@@ -193,11 +191,7 @@ fn get_health(state: State<Arc<AppState>>) -> Result<ConsumerHealth, String> {
             Ok(consumer_health(self_checks, &[]))
         }
         Some(handle) => {
-            let task_alive = state
-                .task
-                .lock()
-                .expect("task mutex poisoned")
-                .is_some();
+            let task_alive = state.task.lock().expect("task mutex poisoned").is_some();
             let self_checks = SelfChecks {
                 history_ok: true,
                 pipeline_alive: task_alive,
@@ -213,12 +207,7 @@ fn get_health(state: State<Arc<AppState>>) -> Result<ConsumerHealth, String> {
 // ---------------------------------------------------------------------------
 
 fn abort_existing(state: &State<Arc<AppState>>) {
-    if let Some(handle) = state
-        .task
-        .lock()
-        .expect("task mutex poisoned")
-        .take()
-    {
+    if let Some(handle) = state.task.lock().expect("task mutex poisoned").take() {
         handle.abort();
     }
 }
