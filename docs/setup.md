@@ -5,15 +5,15 @@
 > (capture + native display) already works. It will be kept current as the build
 > progresses. ⭐ Star the repo to follow along.
 
-notifwire is a mesh: every install is a node, and one always-on node acts as the
-**hub**. Getting running means installing on each device, picking a hub, and
-pairing.
+notifwire is a mesh: every node connects directly to every other node it needs
+to reach. Getting running means installing on each device and pairing consumers
+to producers.
 
 ## Prerequisites
 
 - One or more devices: macOS, Windows, Linux (GNOME/KDE), or Android
-- One device that stays on, to act as the hub (a desktop, a Pi, a spare Android
-  device, or a small VPS)
+- At least one always-on device to act as a producer (a desktop, a Pi, a spare
+  Android device, or a small VPS) if you want persistent capture
 - (Optional) Cloudflare Tunnel or similar for external access without port
   forwarding
 
@@ -39,18 +39,13 @@ Capturing notifications needs a one-time OS permission on producer nodes:
   Notification access**.
 - **Windows / Linux** — no special permission required for basic use.
 
-## Designate the hub
-
-Pick your always-on device and enable **hub** mode in its web UI. The hub
-aggregates from all producers, applies the rules engine, keeps history, and fans
-out to all consumers. A node can be producer, consumer, and hub at once.
-
 ## Pair your devices
 
-On each other node, pair to the hub from the web UI. Device keypairs are
-generated locally on first run and public keys are exchanged during pairing.
-Once paired, notifications flow from every producer to every consumer
-automatically — you don't wire consumers to producers directly.
+On each consumer node, pair directly to each producer from the web UI. Device
+keypairs are generated locally on first run and public keys are exchanged during
+pairing. Once paired, each consumer subscribes directly to its producers — there
+is no relay or forwarding node. A node can be both a producer and a consumer at
+the same time.
 
 ## Send from scripts
 
@@ -61,8 +56,8 @@ notifwire-send "Backup complete" --app "rsync" --priority high
 ```
 
 ```bash
-# Send to a remote hub instead of localhost
-NOTIFWIRE_HOST=hub.example.com notifwire-send "Remote job done"
+# Send to a remote producer instead of localhost
+NOTIFWIRE_HOST=producer.example.com notifwire-send "Remote job done"
 ```
 
 notifwire being unreachable never fails your script — it exits with a non-zero
@@ -84,8 +79,9 @@ granting it. Revisit **Privacy & Security → Accessibility**.
 Check **Notification access** is enabled for notifwire.
 
 ### A consumer isn't receiving
-Confirm it's paired to the hub and online. Check its offline-queue mode — it may
-be set to drop rather than queue while disconnected.
+Confirm it's paired directly to the relevant producer and that the producer is
+online. Check the consumer's offline-queue mode — it may be set to drop rather
+than queue while disconnected.
 
 ---
 
