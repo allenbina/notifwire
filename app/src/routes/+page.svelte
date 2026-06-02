@@ -2019,7 +2019,7 @@
 							<p class="section-hint">Paste custom CSS to override any app styles. Changes apply live.</p>
 							<textarea
 								class="config-textarea css-textarea"
-								placeholder="/* e.g. body { font-size: 14px; } */"
+								placeholder={"/* e.g. body { font-size: 14px; } */"}
 								bind:value={customCssDraft}
 								spellcheck="false"
 							></textarea>
