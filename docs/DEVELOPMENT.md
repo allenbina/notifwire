@@ -5,8 +5,9 @@ is a **Tauri v2** app: a Rust backend (cargo workspace) with a **SvelteKit**
 web UI. See `docs/BUILD_PLAN.md` for the epic/issue roadmap and `docs/SPEC.md`
 for the architecture.
 
-> Status: D0 (foundation) is in progress. Sections marked _(D0)_ are filled in
-> as the workspace scaffolding lands; the toolchain/prereqs below are final.
+> Status: D0–D2 complete and CI-green (foundation, transport/capture, Windows
+> consumer with native display). D3 (the desktop GUI + observability) is in
+> progress. Epic-tagged sections below reflect the feature they landed with.
 
 ## Prerequisites
 
@@ -90,6 +91,30 @@ notifwire-consumer --producer http://127.0.0.1:8787
 
 `GetNotificationsAsync` returns the current Action Center contents, so the
 consumer sees a catch-up batch immediately, then new toasts as they fire.
+
+## Logging & diagnostics _(D3)_
+
+Every binary logs through the `tracing` facade, initialized once at startup by
+the shared `notifwire-observe` crate. Output goes two places:
+
+- **stderr** — human-readable, in whatever terminal you launched the node in.
+- **a rotating daily file** — `<component>.log.<date>` (e.g.
+  `producer.log.2026-06-01`) under the per-OS data dir:
+  - Windows: `%LOCALAPPDATA%\notifwire\data\logs`
+  - Linux: `~/.local/share/notifwire/logs`
+  - macOS: `~/Library/Application Support/notifwire/logs`
+
+The in-app log viewer (a later D3 slice) tails these files. Control verbosity
+with `RUST_LOG` (default `info`):
+
+```
+RUST_LOG=debug notifwire-producer --capture-windows
+RUST_LOG=notifwire_transport=trace notifwire-consumer --producer http://127.0.0.1:8787
+```
+
+Program **output** stays on stdout — the consumer's notification lines and
+`notifwire-send`'s `sent seq=…` confirmation are data, not logs. Status,
+warnings, and errors are diagnostics and go through `tracing`.
 
 ## Test
 

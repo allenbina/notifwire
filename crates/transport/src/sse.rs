@@ -54,9 +54,10 @@ impl ServerState {
             // the live notification, so we warn and continue.
             if let Some(path) = &self.persist_path {
                 if let Err(e) = crate::save_outbox(&ob, path) {
-                    eprintln!(
-                        "notifwire: failed to persist outbox to {}: {e}",
-                        path.display()
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "failed to persist outbox; keeping the live notification"
                     );
                 }
             }

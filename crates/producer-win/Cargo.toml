@@ -13,6 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 notifwire-core = { path = "../core" }
+tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 tokio = { workspace = true, features = ["sync"] }

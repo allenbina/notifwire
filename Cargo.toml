@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/observe",
     "crates/transport",
     "crates/cli",
     "crates/consumer",
@@ -27,6 +28,12 @@ serde_json = "1"
 anyhow = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Observability: a single facade (tracing) across all crates, with each binary
+# fanning logs out to stderr + a rotating daily file (see crates/observe).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+directories = "5"
 
 # Workspace-wide lints. CI runs `cargo clippy -- -D warnings`, so anything
 # below at `warn` is a hard error in CI. Crates opt in with `[lints] workspace = true`.

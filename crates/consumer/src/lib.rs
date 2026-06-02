@@ -71,7 +71,7 @@ impl Pipeline {
     pub fn handle(&mut self, n: &Notification, now_ms: i64) -> Result<bool> {
         if let Some(h) = &self.history {
             if let Err(e) = h.record(n) {
-                eprintln!("notifwire: history record failed: {e}");
+                tracing::warn!(error = %e, id = %n.id, "history record failed");
             }
         }
         if !self.rules.allows(n) || self.deduper.is_duplicate(n, now_ms) {

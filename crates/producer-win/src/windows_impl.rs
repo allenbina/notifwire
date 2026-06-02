@@ -59,7 +59,7 @@ fn run_capture(node: &str, tx: &mpsc::Sender<Notification>) {
     let listener = match UserNotificationListener::Current() {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("notifwire: UserNotificationListener unavailable: {e}");
+            tracing::error!(error = %e, "UserNotificationListener unavailable");
             return;
         }
     };
@@ -67,11 +67,11 @@ fn run_capture(node: &str, tx: &mpsc::Sender<Notification>) {
     match access_allowed(&listener) {
         Ok(true) => {}
         Ok(false) => {
-            eprintln!("notifwire: notification access not granted; capturing nothing");
+            tracing::warn!("notification access not granted; capturing nothing");
             return;
         }
         Err(e) => {
-            eprintln!("notifwire: requesting notification access failed: {e}");
+            tracing::error!(error = %e, "requesting notification access failed");
             return;
         }
     }
@@ -86,7 +86,7 @@ fn run_capture(node: &str, tx: &mpsc::Sender<Notification>) {
                     }
                 }
             }
-            Err(e) => eprintln!("notifwire: capture poll error: {e}"),
+            Err(e) => tracing::warn!(error = %e, "capture poll error"),
         }
         thread::sleep(POLL_INTERVAL);
     }

@@ -42,9 +42,9 @@ struct Cli {
     #[arg(long)]
     persist: Option<PathBuf>,
 
-    /// Capture live Windows toast notifications into this node (WinRT). Requires
-    /// the packaged build with notification-access granted — see
-    /// docs/windows-notification-capture.md.
+    /// Capture live Windows toast notifications into this node (WinRT). Works
+    /// unpackaged; needs notification access granted (run with --check-access
+    /// once) — see docs/windows-notification-capture.md.
     #[arg(long)]
     capture_windows: bool,
 
@@ -61,6 +61,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let _log = notifwire_observe::init("producer");
 
     if cli.check_access {
         let state = notifwire_producer_win::request_access()
@@ -75,26 +76,27 @@ async fn main() -> Result<()> {
     };
     let (addr, serve) = server.bind(&cli.bind).await?;
 
-    println!(
-        "notifwire-producer listening on http://{addr} (outbox capacity {})",
-        cli.capacity
+    tracing::info!(
+        %addr,
+        capacity = cli.capacity,
+        "notifwire-producer listening"
+    );
+    tracing::info!(
+        "subscribe: GET http://{addr}/events?since=<cursor>  |  ingest: POST http://{addr}/ingest"
     );
     if let Some(path) = &cli.persist {
-        println!("  persisting outbox to {}", path.display());
+        tracing::info!(path = %path.display(), "persisting outbox");
     }
-    println!("  subscribe : GET  http://{addr}/events?since=<cursor>");
-    println!("  ingest    : POST http://{addr}/ingest");
-    println!("  e.g.      : notifwire-send \"hello\" --node http://{addr}");
 
     if cli.capture_windows {
         // Pump captured Windows toasts into this node's outbox/stream.
         let mut source = WindowsNotificationSource::start(cli.node_id.clone())
             .map_err(|e| anyhow::anyhow!("starting Windows capture: {e}"))?;
         let producer = server.producer();
-        println!(
-            "  capturing : Windows toasts via {} (node id: {})",
-            source.name(),
-            cli.node_id
+        tracing::info!(
+            via = source.name(),
+            node_id = %cli.node_id,
+            "capturing Windows toasts"
         );
         tokio::spawn(async move {
             loop {
@@ -104,7 +106,7 @@ async fn main() -> Result<()> {
                     }
                     Ok(None) => break, // capture source ended (e.g. access not granted)
                     Err(e) => {
-                        eprintln!("notifwire: capture error: {e}");
+                        tracing::error!(error = %e, "capture error; stopping capture");
                         break;
                     }
                 }

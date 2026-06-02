@@ -54,6 +54,7 @@ struct Cli {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let _log = notifwire_observe::init("consumer");
 
     let mut rules = Rules::default();
     for app in &cli.block_apps {
@@ -77,15 +78,11 @@ async fn main() -> Result<()> {
         })
     };
 
-    println!(
-        "subscribing to {} from cursor {} (display: {})",
-        cli.producer,
-        cli.since,
-        if cli.display_windows {
-            "windows toasts"
-        } else {
-            "stdout"
-        }
+    tracing::info!(
+        producer = %cli.producer,
+        since = cli.since,
+        display = if cli.display_windows { "windows toasts" } else { "stdout" },
+        "subscribing"
     );
 
     let pipeline = Pipeline::new(rules, cli.dedup_window_ms, history, sink);

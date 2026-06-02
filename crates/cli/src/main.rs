@@ -74,6 +74,7 @@ impl From<PriorityArg> for Priority {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let _log = notifwire_observe::init("send");
 
     let notification = if let Some(path) = &cli.json {
         let raw =
