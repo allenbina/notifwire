@@ -186,6 +186,7 @@
 	// ---------------------------------------------------------------------------
 
 	let unlisten: UnlistenFn | null = null;
+	let unlistenTrayNav: UnlistenFn | null = null;
 	let healthInterval: ReturnType<typeof setInterval> | null = null;
 	let scheduleInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -193,6 +194,19 @@
 		// Listen for incoming notifications
 		unlisten = await listen<NotificationItem>('notification', (event) => {
 			notifications = [event.payload, ...notifications].slice(0, 100);
+		});
+
+		// Listen for tray navigation events from the backend
+		unlistenTrayNav = await listen<{ panel: string }>('tray-navigate', (event) => {
+			const { panel } = event.payload;
+			if (panel === 'settings') {
+				activePanel = 'settings';
+				onSettingsTabActivated();
+			} else if (panel === 'history') {
+				activateHistory();
+			} else if (panel === 'notifications') {
+				activePanel = 'notifications';
+			}
 		});
 
 		// Load initial producer list
@@ -219,6 +233,7 @@
 
 	onDestroy(() => {
 		unlisten?.();
+		unlistenTrayNav?.();
 		if (healthInterval) clearInterval(healthInterval);
 		if (scheduleInterval) clearInterval(scheduleInterval);
 	});

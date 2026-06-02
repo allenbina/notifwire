@@ -1,6 +1,6 @@
 //! notifwire Tauri app — backend entry point.
 //!
-//! Slice 3F: Focus Schedules — time-based automatic focus switching.
+//! Slice 3G: Menubar / System Tray — hide-to-tray, tray menu, panel navigation.
 //!
 //! - Loads `config.json` from `app_config_dir` on startup.
 //! - Auto-connects all enabled producers with persisted rules.
@@ -11,6 +11,10 @@
 //! - Exposes Tauri commands for focus CRUD and active-focus management.
 //! - Exposes Tauri commands for schedule CRUD and schedule evaluation.
 //! - `AppState` holds a per-URL map of (JoinHandle, StatusHandle).
+//! - System tray icon with Open/Settings/History/Quit menu items.
+//! - Left-click on tray icon toggles window visibility.
+//! - Window close button hides to tray instead of quitting.
+//! - `tray-navigate` event switches the frontend panel from tray menu clicks.
 
 use notifwire_consumer::{History, Pipeline, ReconnectPolicy, StatusHandle};
 use notifwire_consumer_win::WindowsToastSink;
@@ -24,7 +28,11 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, State,
+};
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -1121,6 +1129,12 @@ fn get_health(state: State<Arc<AppState>>) -> Result<Vec<ProducerStatus>, String
 // Entry point
 // ---------------------------------------------------------------------------
 
+/// Payload for the `tray-navigate` frontend event.
+#[derive(Debug, Clone, Serialize)]
+struct TrayNavigatePayload {
+    panel: String,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state: Arc<AppState> = Arc::new(AppState::default());
@@ -1136,9 +1150,111 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
             // Auto-connect all enabled producers from saved config.
             connect_all(app.handle(), &state_for_setup);
+
+            // ---------------------------------------------------------------
+            // System tray setup
+            // ---------------------------------------------------------------
+            let handle = app.handle();
+
+            let open_item =
+                MenuItem::with_id(handle, "open", "Open notifwire", true, None::<&str>)?;
+            let sep1 = PredefinedMenuItem::separator(handle)?;
+            let settings_item =
+                MenuItem::with_id(handle, "settings", "Settings", true, None::<&str>)?;
+            let history_item = MenuItem::with_id(handle, "history", "History", true, None::<&str>)?;
+            let sep2 = PredefinedMenuItem::separator(handle)?;
+            let quit_item = MenuItem::with_id(handle, "quit", "Quit", true, None::<&str>)?;
+
+            let menu = Menu::with_items(
+                handle,
+                &[
+                    &open_item,
+                    &sep1,
+                    &settings_item,
+                    &history_item,
+                    &sep2,
+                    &quit_item,
+                ],
+            )?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+                        .expect("failed to load tray icon")
+                }))
+                .tooltip("notifwire")
+                .menu(&menu)
+                .on_menu_event({
+                    let handle = app.handle().clone();
+                    move |_tray, event| {
+                        let window = match handle.get_webview_window("main") {
+                            Some(w) => w,
+                            None => return,
+                        };
+                        match event.id().as_ref() {
+                            "open" => {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                            "settings" => {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                let _ = handle.emit(
+                                    "tray-navigate",
+                                    TrayNavigatePayload {
+                                        panel: "settings".into(),
+                                    },
+                                );
+                            }
+                            "history" => {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                let _ = handle.emit(
+                                    "tray-navigate",
+                                    TrayNavigatePayload {
+                                        panel: "history".into(),
+                                    },
+                                );
+                            }
+                            "quit" => {
+                                handle.exit(0);
+                            }
+                            _ => {}
+                        }
+                    }
+                })
+                .on_tray_icon_event({
+                    let handle = app.handle().clone();
+                    move |_tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            if let Some(window) = handle.get_webview_window("main") {
+                                if window.is_visible().unwrap_or(false) {
+                                    let _ = window.hide();
+                                } else {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                window.hide().unwrap();
+                api.prevent_close();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_producers,
