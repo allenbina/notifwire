@@ -1,0 +1,273 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-progress run when a newer commit lands on the same ref.
+concurrency:
+  group: ci-${{ gitea.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Linux build — runs now on the k3s in-cluster act_runner.
+  # Image: catthehacker/ubuntu:act-latest (has git, curl, common build tools;
+  # does NOT have Rust or Node pre-installed).
+  # ---------------------------------------------------------------------------
+  linux-build:
+    name: Build & test (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libssl-dev \
+            libdbus-1-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # The Tauri app embeds the frontend at compile time (generate_context!),
+      # so the SvelteKit build must run before the cargo steps.
+      - name: Build frontend
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all-features
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Linux GNOME — Phase 3 VM (notifwire-gnome on thinnode1).
+  # Runs the full D-Bus / notification-capture integration tests under Xvfb.
+  # continue-on-error: true because the VM does not exist yet.
+  # ---------------------------------------------------------------------------
+  linux-gnome:
+    name: Integration tests (Linux GNOME)
+    runs-on: notifwire-gnome
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libssl-dev \
+            libdbus-1-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            xvfb \
+            notification-daemon
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build frontend
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+      - name: Start notification daemon
+        run: |
+          /usr/lib/notification-daemon/notification-daemon &
+
+      - name: Test (with D-Bus notification capture)
+        run: cargo test --all-features
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Linux KDE — Phase 5 VM (notifwire-kde on thinnode1).
+  # Same as GNOME job but targeting the KDE/Plasma desktop environment.
+  # continue-on-error: true because the VM does not exist yet.
+  # ---------------------------------------------------------------------------
+  linux-kde:
+    name: Integration tests (Linux KDE)
+    runs-on: notifwire-kde
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libssl-dev \
+            libdbus-1-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            xvfb \
+            notification-daemon
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build frontend
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+      - name: Start notification daemon
+        run: |
+          /usr/lib/notification-daemon/notification-daemon &
+
+      - name: Test (with D-Bus notification capture)
+        run: cargo test --all-features
+
+  # ---------------------------------------------------------------------------
+  # Job 4: macOS build — Phases 6–7 VM (notifwire-macos).
+  # Stubbed: just a cargo build until the full artifact pipeline is ready.
+  # continue-on-error: true because the VM does not exist yet.
+  # ---------------------------------------------------------------------------
+  macos-build:
+    name: Build (macOS)
+    runs-on: notifwire-macos
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build frontend
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build
+        run: cargo build --all-features
+
+  # ---------------------------------------------------------------------------
+  # Job 5: Windows build — Phases 6–7 VM (notifwire-windows on thinnode3).
+  # Stubbed: just a cargo build until the full .msi artifact pipeline is ready.
+  # continue-on-error: true because the VM does not exist yet.
+  # ---------------------------------------------------------------------------
+  windows-build:
+    name: Build (Windows)
+    runs-on: notifwire-windows
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build frontend
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build
+        run: cargo build --all-features
