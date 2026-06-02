@@ -26,3 +26,8 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
+notifwire-core = { path = "../../crates/core" }
+notifwire-transport = { path = "../../crates/transport" }
+notifwire-consumer = { path = "../../crates/consumer" }
+notifwire-consumer-win = { path = "../../crates/consumer-win" }
+tokio = { version = "1", features = ["rt", "sync"] }
