@@ -62,6 +62,21 @@
 		sort_order: number;
 	}
 
+	type WeekdayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+	interface TimeRange {
+		start_hhmm: number;
+		end_hhmm: number;
+	}
+
+	interface FocusSchedule {
+		id: string;
+		focus_id: string;
+		days: WeekdayKey[];
+		time_range: TimeRange;
+		enabled: boolean;
+	}
+
 	// ---------------------------------------------------------------------------
 	// State (Svelte 5 runes)
 	// ---------------------------------------------------------------------------
@@ -130,6 +145,33 @@
 	let editFocusName = $state('');
 	let editFocusIcon = $state('');
 
+	// Schedules
+	let schedules = $state<FocusSchedule[]>([]);
+	let schedulesError = $state('');
+	let schedulesBusy = $state(false);
+
+	// Add-schedule form
+	const ALL_DAYS: WeekdayKey[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+	const DAY_LABELS: Record<WeekdayKey, string> = {
+		mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun'
+	};
+	let newSchedDays = $state<WeekdayKey[]>([]);
+	let newSchedStart = $state('22:00');
+	let newSchedEnd = $state('07:00');
+	let newSchedFocusId = $state('');
+
+	// Inline edit state for a schedule
+	let editingScheduleId = $state<string | null>(null);
+	let editSchedDays = $state<WeekdayKey[]>([]);
+	let editSchedStart = $state('22:00');
+	let editSchedEnd = $state('07:00');
+	let editSchedFocusId = $state('');
+
+	// Manual override: if user clicked a focus in this session, don't auto-switch
+	// until the scheduled focus naturally changes to something different.
+	let manualOverrideFocusId = $state<string | null | undefined>(undefined);
+	// undefined = not overridden (initial / cleared); string | null = manual pick
+
 	// Per-focus filter editing (expanded focus id)
 	let focusRulesEditing = $state<string | null>(null);
 	// Scratch copy of the rules being edited for a focus
@@ -145,6 +187,7 @@
 
 	let unlisten: UnlistenFn | null = null;
 	let healthInterval: ReturnType<typeof setInterval> | null = null;
+	let scheduleInterval: ReturnType<typeof setInterval> | null = null;
 
 	onMount(async () => {
 		// Listen for incoming notifications
@@ -155,19 +198,29 @@
 		// Load initial producer list
 		await refreshProducers();
 
-		// Load focuses
+		// Load focuses and schedules
 		await refreshFocuses();
+		await refreshSchedules();
+
+		// Run one immediate schedule evaluation
+		await evalSchedule();
 
 		// Poll health every 3 s
 		healthInterval = setInterval(async () => {
 			await pollHealth();
 		}, 3000);
 		await pollHealth();
+
+		// Evaluate schedule every 60 s
+		scheduleInterval = setInterval(async () => {
+			await evalSchedule();
+		}, 60_000);
 	});
 
 	onDestroy(() => {
 		unlisten?.();
 		if (healthInterval) clearInterval(healthInterval);
+		if (scheduleInterval) clearInterval(scheduleInterval);
 	});
 
 	// ---------------------------------------------------------------------------
@@ -230,6 +283,78 @@
 		}
 	}
 
+	async function refreshSchedules() {
+		try {
+			schedules = await invoke<FocusSchedule[]>('get_schedules');
+		} catch (e) {
+			console.error('get_schedules failed:', e);
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Schedule evaluation helpers
+	// ---------------------------------------------------------------------------
+
+	function currentWeekdayKey(): WeekdayKey {
+		const day = new Date().getDay(); // 0=Sun…6=Sat
+		const map: WeekdayKey[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+		return map[day];
+	}
+
+	function currentHhmm(): number {
+		const d = new Date();
+		return d.getHours() * 100 + d.getMinutes();
+	}
+
+	/** Format a HHMM integer as "HH:MM" for display. */
+	function formatHhmm(hhmm: number): string {
+		const h = Math.floor(hhmm / 100).toString().padStart(2, '0');
+		const m = (hhmm % 100).toString().padStart(2, '0');
+		return `${h}:${m}`;
+	}
+
+	/** Parse "HH:MM" to a HHMM integer. Returns NaN on bad input. */
+	function parseHhmm(s: string): number {
+		const parts = s.split(':');
+		if (parts.length !== 2) return NaN;
+		const h = parseInt(parts[0], 10);
+		const m = parseInt(parts[1], 10);
+		if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return NaN;
+		return h * 100 + m;
+	}
+
+	/** Evaluate schedules via the backend and auto-switch focus if appropriate. */
+	async function evalSchedule() {
+		try {
+			const weekday = currentWeekdayKey();
+			const hhmm = currentHhmm();
+			const scheduledId = await invoke<string | null>('get_scheduled_focus', {
+				weekday,
+				hhmm
+			});
+
+			// If the user has manually overridden, only clear the override when the
+			// scheduled focus transitions away from what they picked.
+			if (manualOverrideFocusId !== undefined) {
+				if (scheduledId !== manualOverrideFocusId) {
+					// Natural transition — clear override and apply new schedule
+					manualOverrideFocusId = undefined;
+				} else {
+					// Still inside the user's override window — don't re-set
+					return;
+				}
+			}
+
+			// Apply scheduled focus if it differs from current
+			if (scheduledId !== activeFocusId) {
+				await invoke('set_active_focus', { id: scheduledId });
+				activeFocusId = scheduledId;
+			}
+		} catch (e) {
+			console.error('schedule eval failed:', e);
+		}
+	}
+
 	// Called when settings tab is opened so data is fresh
 	async function onSettingsTabActivated() {
 		if (settingsTab === 'filters') {
@@ -240,6 +365,7 @@
 		} else if (settingsTab === 'focuses') {
 			await refreshFocuses();
 			await refreshSeenApps();
+			await refreshSchedules();
 		}
 	}
 
@@ -693,9 +819,131 @@
 		try {
 			await invoke('set_active_focus', { id });
 			activeFocusId = id;
+			// Record manual override so auto-scheduler doesn't immediately undo it.
+			manualOverrideFocusId = id;
 		} catch (e) {
 			console.error('set_active_focus failed:', e);
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Settings actions — schedules
+	// ---------------------------------------------------------------------------
+
+	async function handleAddSchedule() {
+		if (!newSchedFocusId || newSchedDays.length === 0) return;
+		const startVal = parseHhmm(newSchedStart);
+		const endVal = parseHhmm(newSchedEnd);
+		if (isNaN(startVal) || isNaN(endVal)) {
+			schedulesError = 'Invalid time format. Use HH:MM.';
+			return;
+		}
+		schedulesError = '';
+		schedulesBusy = true;
+		try {
+			await invoke<FocusSchedule>('add_schedule', {
+				focusId: newSchedFocusId,
+				days: newSchedDays,
+				startHhmm: startVal,
+				endHhmm: endVal
+			});
+			newSchedDays = [];
+			newSchedStart = '22:00';
+			newSchedEnd = '07:00';
+			newSchedFocusId = '';
+			await refreshSchedules();
+		} catch (e) {
+			schedulesError = String(e);
+		} finally {
+			schedulesBusy = false;
+		}
+	}
+
+	async function handleRemoveSchedule(id: string) {
+		schedulesError = '';
+		try {
+			await invoke('remove_schedule', { id });
+			await refreshSchedules();
+		} catch (e) {
+			schedulesError = String(e);
+		}
+	}
+
+	async function handleToggleSchedule(s: FocusSchedule, enabled: boolean) {
+		schedulesError = '';
+		try {
+			await invoke('update_schedule', {
+				id: s.id,
+				focusId: s.focus_id,
+				days: s.days,
+				startHhmm: s.time_range.start_hhmm,
+				endHhmm: s.time_range.end_hhmm,
+				enabled
+			});
+			await refreshSchedules();
+		} catch (e) {
+			schedulesError = String(e);
+		}
+	}
+
+	function startEditSchedule(s: FocusSchedule) {
+		editingScheduleId = s.id;
+		editSchedDays = [...s.days];
+		editSchedStart = formatHhmm(s.time_range.start_hhmm);
+		editSchedEnd = formatHhmm(s.time_range.end_hhmm);
+		editSchedFocusId = s.focus_id;
+	}
+
+	function cancelEditSchedule() {
+		editingScheduleId = null;
+	}
+
+	async function saveEditSchedule(s: FocusSchedule) {
+		const startVal = parseHhmm(editSchedStart);
+		const endVal = parseHhmm(editSchedEnd);
+		if (isNaN(startVal) || isNaN(endVal)) {
+			schedulesError = 'Invalid time format. Use HH:MM.';
+			return;
+		}
+		if (editSchedDays.length === 0) {
+			schedulesError = 'Select at least one day.';
+			return;
+		}
+		schedulesError = '';
+		try {
+			await invoke('update_schedule', {
+				id: s.id,
+				focusId: editSchedFocusId,
+				days: editSchedDays,
+				startHhmm: startVal,
+				endHhmm: endVal,
+				enabled: s.enabled
+			});
+			cancelEditSchedule();
+			await refreshSchedules();
+		} catch (e) {
+			schedulesError = String(e);
+		}
+	}
+
+	function toggleEditDay(day: WeekdayKey) {
+		if (editSchedDays.includes(day)) {
+			editSchedDays = editSchedDays.filter((d) => d !== day);
+		} else {
+			editSchedDays = [...editSchedDays, day];
+		}
+	}
+
+	function toggleNewDay(day: WeekdayKey) {
+		if (newSchedDays.includes(day)) {
+			newSchedDays = newSchedDays.filter((d) => d !== day);
+		} else {
+			newSchedDays = [...newSchedDays, day];
+		}
+	}
+
+	function focusNameById(id: string): string {
+		return focuses.find((f) => f.id === id)?.name ?? id;
 	}
 
 	// Sorted focuses for sidebar display
@@ -1432,6 +1680,113 @@
 									{/each}
 								</ul>
 							{/if}
+						</div>
+
+						<!-- Schedules section -->
+						<div class="filters-section">
+							<h3 class="section-title">Schedules</h3>
+							<p class="section-hint">Automatically activate a focus during set time windows. The scheduler runs every minute; a manual focus switch pauses it until the next transition.</p>
+
+							{#if schedules.length === 0}
+								<p class="empty">No schedules yet.</p>
+							{:else}
+								<ul class="schedule-list">
+									{#each schedules as sched (sched.id)}
+										<li class="schedule-item" class:sched-disabled={!sched.enabled}>
+											{#if editingScheduleId === sched.id}
+												<!-- Inline edit -->
+												<div class="sched-edit-block">
+													<div class="sched-days-row">
+														{#each ALL_DAYS as day}
+															<button
+																class="day-badge"
+																class:day-badge-on={editSchedDays.includes(day)}
+																onclick={() => toggleEditDay(day)}
+																type="button"
+															>{DAY_LABELS[day]}</button>
+														{/each}
+													</div>
+													<div class="sched-edit-fields">
+														<input type="time" bind:value={editSchedStart} class="time-input" />
+														<span class="retention-unit">–</span>
+														<input type="time" bind:value={editSchedEnd} class="time-input" />
+														<select bind:value={editSchedFocusId} class="field-select">
+															{#each sortedFocuses as f (f.id)}
+																<option value={f.id}>{f.icon ? f.icon + ' ' : ''}{f.name}</option>
+															{/each}
+														</select>
+														<button class="btn-add btn-sm" onclick={() => saveEditSchedule(sched)}>Save</button>
+														<button class="btn-cancel btn-sm" onclick={cancelEditSchedule}>Cancel</button>
+													</div>
+												</div>
+											{:else}
+												<!-- Display row -->
+												<div class="sched-display-row">
+													<div class="sched-info">
+														<div class="sched-days">
+															{#each sched.days as day}
+																<span class="day-badge day-badge-on">{DAY_LABELS[day]}</span>
+															{/each}
+														</div>
+														<span class="sched-time">{formatHhmm(sched.time_range.start_hhmm)}–{formatHhmm(sched.time_range.end_hhmm)}</span>
+														<span class="sched-arrow">→</span>
+														<span class="sched-focus-name">{focusNameById(sched.focus_id)}</span>
+													</div>
+													<div class="sched-controls">
+														<label class="toggle" title={sched.enabled ? 'Disable' : 'Enable'}>
+															<input
+																type="checkbox"
+																checked={sched.enabled}
+																onchange={(e) => handleToggleSchedule(sched, (e.target as HTMLInputElement).checked)}
+															/>
+															<span class="toggle-track"></span>
+														</label>
+														<button class="btn-action" onclick={() => startEditSchedule(sched)} title="Edit">✎</button>
+														<button class="btn-remove" onclick={() => handleRemoveSchedule(sched.id)} title="Delete">✕</button>
+													</div>
+												</div>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+
+							{#if schedulesError}
+								<p class="add-error">{schedulesError}</p>
+							{/if}
+
+							<!-- Add schedule form -->
+							<div class="sched-add-block">
+								<h4 class="add-title">Add schedule</h4>
+								<div class="sched-days-row">
+									{#each ALL_DAYS as day}
+										<button
+											class="day-badge"
+											class:day-badge-on={newSchedDays.includes(day)}
+											onclick={() => toggleNewDay(day)}
+											type="button"
+										>{DAY_LABELS[day]}</button>
+									{/each}
+								</div>
+								<div class="sched-add-fields">
+									<input type="time" bind:value={newSchedStart} class="time-input" />
+									<span class="retention-unit">–</span>
+									<input type="time" bind:value={newSchedEnd} class="time-input" />
+									<select bind:value={newSchedFocusId} class="field-select">
+										<option value="">Select focus…</option>
+										{#each sortedFocuses as f (f.id)}
+											<option value={f.id}>{f.icon ? f.icon + ' ' : ''}{f.name}</option>
+										{/each}
+									</select>
+									<button
+										class="btn-add btn-sm"
+										onclick={handleAddSchedule}
+										disabled={schedulesBusy || newSchedDays.length === 0 || !newSchedFocusId}
+									>
+										{schedulesBusy ? 'Adding…' : 'Add'}
+									</button>
+								</div>
+							</div>
 						</div>
 
 						<!-- Add focus form -->
@@ -2528,5 +2883,151 @@
 		opacity: 0.35;
 		font-size: 0.85rem;
 		margin: 0.25rem 0;
+	}
+
+	/* Schedules */
+
+	.schedule-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.schedule-item {
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 6px;
+		overflow: hidden;
+	}
+
+	.sched-disabled {
+		opacity: 0.5;
+	}
+
+	.sched-display-row {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.5rem 0.75rem;
+		flex-wrap: wrap;
+	}
+
+	.sched-info {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+		min-width: 0;
+	}
+
+	.sched-days {
+		display: flex;
+		gap: 0.2rem;
+		flex-wrap: wrap;
+	}
+
+	.sched-time {
+		font-size: 0.85rem;
+		font-family: monospace;
+		color: #fde68a;
+		white-space: nowrap;
+	}
+
+	.sched-arrow {
+		font-size: 0.8rem;
+		color: #4b526e;
+	}
+
+	.sched-focus-name {
+		font-size: 0.85rem;
+		color: #93c5fd;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.sched-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		flex-shrink: 0;
+	}
+
+	.sched-edit-block,
+	.sched-add-block {
+		padding: 0.6rem 0.75rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+
+	.sched-edit-block {
+		border-top: 1px solid #22263a;
+		background: #0f1117;
+	}
+
+	.sched-add-block {
+		border-top: 1px solid #22263a;
+		margin-top: 0.2rem;
+		padding-top: 0.6rem;
+	}
+
+	.sched-days-row {
+		display: flex;
+		gap: 0.25rem;
+		flex-wrap: wrap;
+	}
+
+	.sched-edit-fields,
+	.sched-add-fields {
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.day-badge {
+		font-size: 0.72rem;
+		font-weight: 600;
+		padding: 0.15rem 0.45rem;
+		border-radius: 3px;
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		color: #4b526e;
+		cursor: pointer;
+		transition: background 0.12s, color 0.12s, border-color 0.12s;
+		line-height: 1.4;
+		white-space: nowrap;
+	}
+
+	.day-badge:hover {
+		color: #c0c8e0;
+		background: #22263a;
+	}
+
+	.day-badge-on {
+		background: #1e2845;
+		color: #93c5fd;
+		border-color: #2d4070;
+	}
+
+	.time-input {
+		padding: 0.38rem 0.5rem;
+		background: #1a1d24;
+		border: 1px solid #2e3240;
+		border-radius: 5px;
+		color: #e6e6e6;
+		font-size: 0.88rem;
+		width: 108px;
+		flex-shrink: 0;
+	}
+
+	.time-input:focus {
+		outline: none;
+		border-color: #3b82f6;
 	}
 </style>

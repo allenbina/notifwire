@@ -1,6 +1,6 @@
 //! notifwire Tauri app — backend entry point.
 //!
-//! Slice 3E: Focuses — named filter profiles the user can switch between.
+//! Slice 3F: Focus Schedules — time-based automatic focus switching.
 //!
 //! - Loads `config.json` from `app_config_dir` on startup.
 //! - Auto-connects all enabled producers with persisted rules.
@@ -9,6 +9,7 @@
 //! - Exposes Tauri commands for rules management.
 //! - Exposes Tauri commands for history queries and retention settings.
 //! - Exposes Tauri commands for focus CRUD and active-focus management.
+//! - Exposes Tauri commands for schedule CRUD and schedule evaluation.
 //! - `AppState` holds a per-URL map of (JoinHandle, StatusHandle).
 
 use notifwire_consumer::{History, Pipeline, ReconnectPolicy, StatusHandle};
@@ -63,6 +64,90 @@ impl Default for RetentionConfig {
 // Focus types
 // ---------------------------------------------------------------------------
 
+/// Day-of-week enum for schedule matching.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Weekday {
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+    Sun,
+}
+
+/// A half-open time range in HHMM notation (local time).
+/// If `end_hhmm < start_hhmm` the range wraps midnight.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeRange {
+    /// e.g. 2200 = 22:00
+    pub start_hhmm: u16,
+    /// e.g. 700 = 07:00
+    pub end_hhmm: u16,
+}
+
+/// A saved schedule: activate `focus_id` on `days` during `time_range`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FocusSchedule {
+    pub id: String,
+    /// ID of the [`Focus`] to activate.
+    pub focus_id: String,
+    /// Days this schedule applies to.
+    pub days: Vec<Weekday>,
+    pub time_range: TimeRange,
+    pub enabled: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Schedule helpers (pure, not Tauri commands)
+// ---------------------------------------------------------------------------
+
+/// Parse a weekday string (same variants as [`Weekday`] serde) into the enum.
+fn parse_weekday(s: &str) -> Result<Weekday, String> {
+    match s {
+        "mon" => Ok(Weekday::Mon),
+        "tue" => Ok(Weekday::Tue),
+        "wed" => Ok(Weekday::Wed),
+        "thu" => Ok(Weekday::Thu),
+        "fri" => Ok(Weekday::Fri),
+        "sat" => Ok(Weekday::Sat),
+        "sun" => Ok(Weekday::Sun),
+        other => Err(format!(
+            "unknown weekday '{other}'; expected mon|tue|wed|thu|fri|sat|sun"
+        )),
+    }
+}
+
+/// Return true if `hhmm` (e.g. 2230 = 22:30) falls inside `range`.
+/// Handles midnight-wrap when `end < start`.
+fn hhmm_in_range(hhmm: u16, range: &TimeRange) -> bool {
+    let s = range.start_hhmm;
+    let e = range.end_hhmm;
+    if e < s {
+        // Wraps midnight: in range if >= start OR < end
+        hhmm >= s || hhmm < e
+    } else {
+        hhmm >= s && hhmm < e
+    }
+}
+
+/// Find the first enabled schedule whose day + time range matches the supplied
+/// local weekday + HHMM, and return its `focus_id`.  Returns `None` if nothing
+/// matches.  The frontend calls this every minute so we keep it allocation-light.
+pub fn active_scheduled_focus(
+    schedules: &[FocusSchedule],
+    _focuses: &[Focus],
+    weekday: &Weekday,
+    hhmm: u16,
+) -> Option<String> {
+    schedules
+        .iter()
+        .filter(|s| s.enabled && s.days.contains(weekday) && hhmm_in_range(hhmm, &s.time_range))
+        .map(|s| s.focus_id.clone())
+        .next()
+}
+
 /// Generate a stable local ID from a monotonic counter mixed with a
 /// fixed multiplier. No external crate needed — good enough for local IDs.
 fn new_id() -> String {
@@ -104,6 +189,8 @@ struct AppConfig {
     /// `None` means the built-in "All" focus is active.
     #[serde(default)]
     active_focus_id: Option<String>,
+    #[serde(default)]
+    schedules: Vec<FocusSchedule>,
 }
 
 // ---------------------------------------------------------------------------
@@ -878,6 +965,113 @@ fn reorder_focuses(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Schedule commands
+// ---------------------------------------------------------------------------
+
+/// Return all saved focus schedules.
+#[tauri::command]
+fn get_schedules(app: AppHandle) -> Vec<FocusSchedule> {
+    load_config(&app).schedules
+}
+
+/// Create a new schedule.  `days` is a list of strings like `["mon","fri"]`.
+#[tauri::command]
+fn add_schedule(
+    app: AppHandle,
+    focus_id: String,
+    days: Vec<String>,
+    start_hhmm: u16,
+    end_hhmm: u16,
+) -> Result<FocusSchedule, String> {
+    if focus_id.is_empty() {
+        return Err("focus_id must not be empty".into());
+    }
+    let parsed_days = days
+        .iter()
+        .map(|d| parse_weekday(d))
+        .collect::<Result<Vec<_>, _>>()?;
+    if parsed_days.is_empty() {
+        return Err("days must not be empty".into());
+    }
+    let mut cfg = load_config(&app);
+    if !cfg.focuses.iter().any(|f| f.id == focus_id) {
+        return Err(format!("focus '{focus_id}' not found"));
+    }
+    let schedule = FocusSchedule {
+        id: new_id(),
+        focus_id,
+        days: parsed_days,
+        time_range: TimeRange {
+            start_hhmm,
+            end_hhmm,
+        },
+        enabled: true,
+    };
+    cfg.schedules.push(schedule.clone());
+    save_config(&app, &cfg)?;
+    Ok(schedule)
+}
+
+/// Update all mutable fields of an existing schedule.
+#[tauri::command]
+fn update_schedule(
+    app: AppHandle,
+    id: String,
+    focus_id: String,
+    days: Vec<String>,
+    start_hhmm: u16,
+    end_hhmm: u16,
+    enabled: bool,
+) -> Result<(), String> {
+    let parsed_days = days
+        .iter()
+        .map(|d| parse_weekday(d))
+        .collect::<Result<Vec<_>, _>>()?;
+    if parsed_days.is_empty() {
+        return Err("days must not be empty".into());
+    }
+    let mut cfg = load_config(&app);
+    if !focus_id.is_empty() && !cfg.focuses.iter().any(|f| f.id == focus_id) {
+        return Err(format!("focus '{focus_id}' not found"));
+    }
+    let sched = cfg
+        .schedules
+        .iter_mut()
+        .find(|s| s.id == id)
+        .ok_or_else(|| format!("schedule '{id}' not found"))?;
+    sched.focus_id = focus_id;
+    sched.days = parsed_days;
+    sched.time_range = TimeRange {
+        start_hhmm,
+        end_hhmm,
+    };
+    sched.enabled = enabled;
+    save_config(&app, &cfg)
+}
+
+/// Delete a schedule by id.
+#[tauri::command]
+fn remove_schedule(app: AppHandle, id: String) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    let before = cfg.schedules.len();
+    cfg.schedules.retain(|s| s.id != id);
+    if cfg.schedules.len() == before {
+        return Err(format!("schedule '{id}' not found"));
+    }
+    save_config(&app, &cfg)
+}
+
+/// Evaluate schedules against the caller-supplied local weekday + HHMM.
+/// Returns the matching `focus_id`, or `null` if nothing matches.
+/// Frontend calls this on mount and every 60 seconds.
+#[tauri::command]
+fn get_scheduled_focus(app: AppHandle, weekday: String, hhmm: u16) -> Option<String> {
+    let weekday = parse_weekday(&weekday).ok()?;
+    let cfg = load_config(&app);
+    active_scheduled_focus(&cfg.schedules, &cfg.focuses, &weekday, hhmm)
+}
+
+// ---------------------------------------------------------------------------
 // Enum parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -975,6 +1169,11 @@ pub fn run() {
             set_focus_rules,
             set_active_focus,
             reorder_focuses,
+            get_schedules,
+            add_schedule,
+            update_schedule,
+            remove_schedule,
+            get_scheduled_focus,
         ])
         .run(tauri::generate_context!())
         .expect("notifwire app failed to start");
