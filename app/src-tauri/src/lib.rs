@@ -1,18 +1,22 @@
 //! notifwire Tauri app — backend entry point.
 //!
-//! Slice 3B: persistent producers list.
+//! Slice 3C: rules persistence, seen-apps tracking, filters UI.
 //!
 //! - Loads `config.json` from `app_config_dir` on startup.
-//! - Auto-connects all enabled producers.
+//! - Auto-connects all enabled producers with persisted rules.
 //! - Exposes Tauri commands for CRUD on the producer list.
+//! - Exposes Tauri commands for rules management.
 //! - `AppState` holds a per-URL map of (JoinHandle, StatusHandle).
 
 use notifwire_consumer::{Pipeline, ReconnectPolicy, StatusHandle};
 use notifwire_consumer_win::WindowsToastSink;
-use notifwire_core::{DisplayError, Notification, NotificationSink, ProducerStatus, Rules};
+use notifwire_core::{
+    DefaultMode, DisplayError, Filter, FilterAction, MatchField, Notification, NotificationSink,
+    ProducerStatus, Rules,
+};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     sync::{Arc, Mutex},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -34,6 +38,8 @@ pub struct ProducerEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct AppConfig {
     producers: Vec<ProducerEntry>,
+    #[serde(default)]
+    rules: Rules,
 }
 
 // ---------------------------------------------------------------------------
@@ -47,39 +53,34 @@ fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .map_err(|e| format!("could not resolve app_config_dir: {e}"))
 }
 
-fn load_config(app: &AppHandle) -> Vec<ProducerEntry> {
+fn load_config(app: &AppHandle) -> AppConfig {
     let path = match config_path(app) {
         Ok(p) => p,
         Err(e) => {
             log::warn!("config path error: {e}");
-            return vec![];
+            return AppConfig::default();
         }
     };
     match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str::<AppConfig>(&text)
-            .map(|c| c.producers)
-            .unwrap_or_else(|e| {
-                log::warn!("config parse error (starting fresh): {e}");
-                vec![]
-            }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Ok(text) => serde_json::from_str::<AppConfig>(&text).unwrap_or_else(|e| {
+            log::warn!("config parse error (starting fresh): {e}");
+            AppConfig::default()
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => AppConfig::default(),
         Err(e) => {
             log::warn!("config read error: {e}");
-            vec![]
+            AppConfig::default()
         }
     }
 }
 
-fn save_config(app: &AppHandle, producers: &[ProducerEntry]) -> Result<(), String> {
+fn save_config(app: &AppHandle, cfg: &AppConfig) -> Result<(), String> {
     let path = config_path(app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create config dir failed: {e}"))?;
     }
-    let cfg = AppConfig {
-        producers: producers.to_vec(),
-    };
     let text =
-        serde_json::to_string_pretty(&cfg).map_err(|e| format!("config serialize failed: {e}"))?;
+        serde_json::to_string_pretty(cfg).map_err(|e| format!("config serialize failed: {e}"))?;
     std::fs::write(&path, text).map_err(|e| format!("config write failed: {e}"))
 }
 
@@ -100,9 +101,11 @@ struct NotificationPayload {
 /// A [`NotificationSink`] that:
 /// 1. Fires a WinRT toast via [`WindowsToastSink`].
 /// 2. Emits a `notification` Tauri event to all frontend windows.
+/// 3. Records the `app_name` in the shared seen-apps set.
 struct TauriSink {
     toast: Mutex<WindowsToastSink>,
     app: AppHandle,
+    seen_apps: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl std::fmt::Debug for TauriSink {
@@ -113,6 +116,12 @@ impl std::fmt::Debug for TauriSink {
 
 impl NotificationSink for TauriSink {
     fn show(&self, n: &Notification) -> Result<(), DisplayError> {
+        // Track seen app names.
+        self.seen_apps
+            .lock()
+            .expect("seen_apps mutex poisoned")
+            .insert(n.app_name.clone());
+
         if let Err(e) = self.toast.lock().expect("toast mutex poisoned").show(n) {
             log::warn!("WinRT toast failed: {e}");
         }
@@ -152,9 +161,18 @@ struct Connection {
 
 /// Managed state shared across Tauri commands.
 /// Keyed by producer URL.
-#[derive(Default)]
 struct AppState {
     connections: Mutex<HashMap<String, Connection>>,
+    seen_apps: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            connections: Mutex::new(HashMap::new()),
+            seen_apps: Arc::new(Mutex::new(BTreeSet::new())),
+        }
+    }
 }
 
 impl std::fmt::Debug for AppState {
@@ -169,7 +187,12 @@ impl std::fmt::Debug for AppState {
 
 /// Start a consumer task for `url`, replacing any existing one.
 /// Returns an error string if the toast sink can't be initialised.
-fn connect_one(app: &AppHandle, state: &Arc<AppState>, url: &str) -> Result<(), String> {
+fn connect_one(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    url: &str,
+    rules: Rules,
+) -> Result<(), String> {
     // Abort any existing task for this URL.
     disconnect_one(state, url);
 
@@ -179,9 +202,10 @@ fn connect_one(app: &AppHandle, state: &Arc<AppState>, url: &str) -> Result<(), 
     let sink = TauriSink {
         toast: Mutex::new(toast),
         app: app.clone(),
+        seen_apps: Arc::clone(&state.seen_apps),
     };
 
-    let pipeline = Pipeline::new(Rules::default(), 5_000, None, Box::new(sink));
+    let pipeline = Pipeline::new(rules, 5_000, None, Box::new(sink));
     let status = StatusHandle::new(url);
     let url_owned = url.to_owned();
     let state_clone = Arc::clone(state);
@@ -233,11 +257,27 @@ fn disconnect_one(state: &Arc<AppState>, url: &str) {
 
 /// Connect all enabled producers from config at startup.
 fn connect_all(app: &AppHandle, state: &Arc<AppState>) {
-    for entry in load_config(app) {
+    let cfg = load_config(app);
+    for entry in &cfg.producers {
         if entry.enabled {
-            if let Err(e) = connect_one(app, state, &entry.url) {
+            if let Err(e) = connect_one(app, state, &entry.url, cfg.rules.clone()) {
                 log::warn!("startup connect failed for {}: {e}", entry.url);
             }
+        }
+    }
+}
+
+/// Disconnect and reconnect every enabled producer with the given rules.
+/// Used after any rules change so the pipeline picks up the new configuration.
+fn restart_all_connections(app: &AppHandle, state: &Arc<AppState>, rules: &Rules) {
+    let cfg = load_config(app);
+    for entry in &cfg.producers {
+        if entry.enabled {
+            if let Err(e) = connect_one(app, state, &entry.url, rules.clone()) {
+                log::warn!("rules-restart connect failed for {}: {e}", entry.url);
+            }
+        } else {
+            disconnect_one(state, &entry.url);
         }
     }
 }
@@ -249,7 +289,7 @@ fn connect_all(app: &AppHandle, state: &Arc<AppState>) {
 /// Return all configured producers (from config file).
 #[tauri::command]
 fn get_producers(app: AppHandle) -> Vec<ProducerEntry> {
-    load_config(&app)
+    load_config(&app).producers
 }
 
 /// Append a new producer, save config, and connect if enabled.
@@ -260,30 +300,31 @@ fn add_producer(
     url: String,
     label: Option<String>,
 ) -> Result<(), String> {
-    let mut producers = load_config(&app);
+    let mut cfg = load_config(&app);
     let url = url.trim().to_owned();
     if url.is_empty() {
         return Err("URL must not be empty".into());
     }
-    if producers.iter().any(|p| p.url == url) {
+    if cfg.producers.iter().any(|p| p.url == url) {
         return Err(format!("producer '{url}' already exists"));
     }
-    producers.push(ProducerEntry {
+    cfg.producers.push(ProducerEntry {
         url: url.clone(),
         label,
         enabled: true,
     });
-    save_config(&app, &producers)?;
-    connect_one(&app, &state, &url)?;
+    let rules = cfg.rules.clone();
+    save_config(&app, &cfg)?;
+    connect_one(&app, &state, &url, rules)?;
     Ok(())
 }
 
 /// Remove a producer, save config, and disconnect it.
 #[tauri::command]
 fn remove_producer(app: AppHandle, state: State<Arc<AppState>>, url: String) -> Result<(), String> {
-    let mut producers = load_config(&app);
-    producers.retain(|p| p.url != url);
-    save_config(&app, &producers)?;
+    let mut cfg = load_config(&app);
+    cfg.producers.retain(|p| p.url != url);
+    save_config(&app, &cfg)?;
     disconnect_one(&state, &url);
     Ok(())
 }
@@ -296,19 +337,163 @@ fn set_producer_enabled(
     url: String,
     enabled: bool,
 ) -> Result<(), String> {
-    let mut producers = load_config(&app);
-    let entry = producers
+    let mut cfg = load_config(&app);
+    let entry = cfg
+        .producers
         .iter_mut()
         .find(|p| p.url == url)
         .ok_or_else(|| format!("producer '{url}' not found"))?;
     entry.enabled = enabled;
-    save_config(&app, &producers)?;
+    let rules = cfg.rules.clone();
+    save_config(&app, &cfg)?;
     if enabled {
-        connect_one(&app, &state, &url)?;
+        connect_one(&app, &state, &url, rules)?;
     } else {
         disconnect_one(&state, &url);
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Rules commands
+// ---------------------------------------------------------------------------
+
+/// Return the current rules from config.
+#[tauri::command]
+fn get_rules(app: AppHandle) -> Rules {
+    load_config(&app).rules
+}
+
+/// Return every app name seen in the current session (sorted).
+#[tauri::command]
+fn get_seen_apps(state: State<Arc<AppState>>) -> Vec<String> {
+    state
+        .seen_apps
+        .lock()
+        .expect("seen_apps mutex poisoned")
+        .iter()
+        .cloned()
+        .collect()
+}
+
+/// Set the default mode: `"allow"` or `"block"`.
+#[tauri::command]
+fn set_default_mode(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    mode: String,
+) -> Result<(), String> {
+    let default_mode = parse_default_mode(&mode)?;
+    let mut cfg = load_config(&app);
+    cfg.rules.default_mode = default_mode;
+    save_config(&app, &cfg)?;
+    restart_all_connections(&app, &state, &cfg.rules);
+    Ok(())
+}
+
+/// Set per-app allow (`enabled=true`) or block (`enabled=false`).
+#[tauri::command]
+fn set_app_rule(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    app_name: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    cfg.rules.apps.insert(app_name, enabled);
+    save_config(&app, &cfg)?;
+    restart_all_connections(&app, &state, &cfg.rules);
+    Ok(())
+}
+
+/// Remove the explicit per-app rule (falls back to default mode).
+#[tauri::command]
+fn remove_app_rule(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    app_name: String,
+) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    cfg.rules.apps.remove(&app_name);
+    save_config(&app, &cfg)?;
+    restart_all_connections(&app, &state, &cfg.rules);
+    Ok(())
+}
+
+/// Append a new keyword filter.
+#[tauri::command]
+fn add_filter(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    field: String,
+    contains: String,
+    action: String,
+) -> Result<(), String> {
+    let field = parse_match_field(&field)?;
+    let action = parse_filter_action(&action)?;
+    let contains = contains.trim().to_owned();
+    if contains.is_empty() {
+        return Err("filter keyword must not be empty".into());
+    }
+    let mut cfg = load_config(&app);
+    cfg.rules.filters.push(Filter {
+        field,
+        contains,
+        action,
+    });
+    save_config(&app, &cfg)?;
+    restart_all_connections(&app, &state, &cfg.rules);
+    Ok(())
+}
+
+/// Remove a keyword filter by index.
+#[tauri::command]
+fn remove_filter(app: AppHandle, state: State<Arc<AppState>>, index: usize) -> Result<(), String> {
+    let mut cfg = load_config(&app);
+    if index >= cfg.rules.filters.len() {
+        return Err(format!(
+            "filter index {index} out of range (len={})",
+            cfg.rules.filters.len()
+        ));
+    }
+    cfg.rules.filters.remove(index);
+    save_config(&app, &cfg)?;
+    restart_all_connections(&app, &state, &cfg.rules);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Enum parsing helpers
+// ---------------------------------------------------------------------------
+
+fn parse_default_mode(s: &str) -> Result<DefaultMode, String> {
+    match s {
+        "allow" => Ok(DefaultMode::Allow),
+        "block" => Ok(DefaultMode::Block),
+        other => Err(format!(
+            "unknown default_mode '{other}'; expected allow|block"
+        )),
+    }
+}
+
+fn parse_match_field(s: &str) -> Result<MatchField, String> {
+    match s {
+        "title" => Ok(MatchField::Title),
+        "body" => Ok(MatchField::Body),
+        "appname" => Ok(MatchField::AppName),
+        "any" => Ok(MatchField::Any),
+        other => Err(format!(
+            "unknown field '{other}'; expected title|body|appname|any"
+        )),
+    }
+}
+
+fn parse_filter_action(s: &str) -> Result<FilterAction, String> {
+    match s {
+        "allow" => Ok(FilterAction::Allow),
+        "block" => Ok(FilterAction::Block),
+        other => Err(format!("unknown action '{other}'; expected allow|block")),
+    }
 }
 
 /// Return the live status of every active connection.
@@ -352,6 +537,13 @@ pub fn run() {
             remove_producer,
             set_producer_enabled,
             get_health,
+            get_rules,
+            get_seen_apps,
+            set_default_mode,
+            set_app_rule,
+            remove_app_rule,
+            add_filter,
+            remove_filter,
         ])
         .run(tauri::generate_context!())
         .expect("notifwire app failed to start");
