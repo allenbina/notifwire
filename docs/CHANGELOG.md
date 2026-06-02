@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+
+#### GUI / Desktop App (D3)
+- App-as-consumer: Tauri app subscribes to producers, runs consumer pipeline,
+  shows WinRT toasts and in-app notification list
+- Producers settings: persistent producer list (JSON config), add/remove/
+  enable/disable, auto-connect on startup
+- Filters: per-app allow/block rules, keyword filters (field/contains/action),
+  default-mode toggle — persisted and applied to pipeline
+- History: SQLite history view with pagination and app filter; retention
+  settings (global default + per-producer override); age-based pruning with
+  optional max-count cap
+- Focuses: named filter profiles with icon/rules; "All" built-in; sidebar
+  switcher; CRUD in settings; per-focus rules editor
+- Focus schedules: time-based automatic focus switching; day+time-range per
+  schedule; manual override preserved until next transition
+- System tray: hide-to-tray on window close; tray menu (Open / Settings /
+  History / Quit); left-click toggles visibility; panel navigation events
+- Import/Export: full config round-trip via JSON copy-paste
+- Custom CSS theming: user-supplied CSS injected into webview with live preview
+
+#### Foundation (D0–D2)
 - Public spec (v3) and project documentation; project scaffolding (README, docs
   site, contribution guides)
 - Rust cargo workspace + Tauri v2 + SvelteKit skeleton; GitHub Actions CI
@@ -26,8 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   producer `GET /health` self-report endpoint
 
 notifwire is in **active development**; the Windows core (capture + native
-display) works end-to-end. Not yet released — see the [spec](SPEC.md) for the
-v1 → v3 roadmap and [BUILD_PLAN](BUILD_PLAN.md) for epic status.
+display) works end-to-end, and the desktop GUI (D3) is complete. Not yet
+released — see the [spec](SPEC.md) for the v1 → v3 roadmap and
+[BUILD_PLAN](BUILD_PLAN.md) for epic status.
 
 ---
 

@@ -43,8 +43,9 @@ Read the full case in **[docs/why.md](docs/why.md)**.
 ## Quick start
 
 > **Status: active development.** The Windows core — toast capture and native
-> display — works end-to-end; the desktop GUI is being built next. Not yet
-> released. ⭐ Star the repo to follow along.
+> display — works end-to-end. The desktop GUI (producers, history, focuses,
+> schedules, tray, theming) is now complete. Not yet released. ⭐ Star the repo
+> to follow along.
 
 Once v1 ships, getting running will look like:
 
