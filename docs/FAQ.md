@@ -17,8 +17,9 @@ server. Notifications never leave your hardware unless you explicitly configure 
 consumer (webhook, MQTT, Apprise) to send them somewhere.
 
 ### Is it ready to use?
-Not yet. notifwire is in the design stage. The full spec is published and v1
-(macOS + Windows core) is in development. Star the repo to follow along.
+Not yet — but it's actively being built. The full spec is published and v1
+(macOS + Windows core) is in development; the Windows core (toast capture +
+native display) already works end-to-end. Star the repo to follow along.
 
 ### How does it relate to chatwire?
 Same philosophy, different data stream. chatwire bridges your iMessages;

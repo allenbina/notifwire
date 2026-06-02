@@ -1,8 +1,9 @@
 # Setup Guide
 
-> **Status: design stage.** notifwire is not yet released. This guide describes
-> how setup will work for v1 (macOS + Windows core). It will be kept current as
-> the build progresses. ⭐ Star the repo to follow along.
+> **Status: active development.** notifwire is not yet released. This guide
+> describes how setup will work for v1 (macOS + Windows core); the Windows core
+> (capture + native display) already works. It will be kept current as the build
+> progresses. ⭐ Star the repo to follow along.
 
 notifwire is a mesh: every install is a node, and one always-on node acts as the
 **hub**. Getting running means installing on each device, picking a hub, and

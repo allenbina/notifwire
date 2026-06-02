@@ -3,9 +3,10 @@
 Thanks for your interest in contributing! notifwire is open source and welcomes
 contributions.
 
-> notifwire is in the design stage. Right now the most valuable contributions are
-> feedback on the [spec](SPEC.md) and use cases — but code, docs, and plugins
-> are all welcome as the build comes together.
+> notifwire is in active development (the Windows core works; the desktop GUI is
+> being built). Valuable contributions right now: feedback on the [spec](SPEC.md)
+> and use cases — but code, docs, and plugins are all welcome as the build comes
+> together.
 
 ## Ways to contribute
 

@@ -26,8 +26,10 @@ repo.
 
 ## Stack
 
-- **Backend:** Rust, Tauri v2. Cargo workspace of crates (`core`, `transport`,
-  `producer-win`, `consumer`, `cli`, `plugins/*`).
+- **Backend:** Rust, Tauri v2. Cargo workspace: `core` (model/config/rules/dedup/
+  icons/health), `observe` (logging), `transport` (SSE mesh + outbox), `cli`
+  (`notifwire-send`), `producer` + `producer-win` (Windows capture), `consumer` +
+  `consumer-win` (Windows display), `app/src-tauri` (desktop app); `plugins/*` later.
 - **Frontend:** SvelteKit (Tauri web UI).
 - **Transport:** SSE for v1, behind a `MeshTransport` trait (WebSocket adapter
   later).
@@ -38,13 +40,25 @@ repo.
 
 | Epic | Title | Depends on | Done when |
 |------|-------|-----------|-----------|
-| **D0** | Foundation / walking skeleton | — | inject via `notifwire-send` → SSE loopback → stub consumer prints it |
-| **D1** | Windows producer | D0 | real Windows toasts captured → served → caught by test consumer; offline catch-up via cursor works |
-| **D2** | Windows consumer (native display) | D0 (D1 for real data) | full loopback: notifications mirrored, filtered, deduped, icons + history |
-| **D3** | Settings UI + Focuses | D1, D2 | focuses tree (add/copy/schedule/default) + per-device toggles + config import/export |
+| **D0** ✅ | Foundation / walking skeleton | — | inject via `notifwire-send` → SSE loopback → stub consumer prints it |
+| **D1** ✅ | Windows producer | D0 | real Windows toasts captured → served → caught by test consumer; offline catch-up via cursor works |
+| **D2** ✅ | Windows consumer (native display) | D0 (D1 for real data) | full loopback: notifications mirrored, filtered, deduped, icons + history |
+| **D3** 🚧 | Observability foundation + Settings UI + Focuses | D1, D2 | logging + health/auto-reconnect, then focuses tree (add/copy/schedule/default) + per-device toggles + config import/export |
 | **D4** | Headless + Docker + config sync + output plugins | D2, D3 | Docker consumer pulls file config, subscribes over Tailscale, re-exports to MQTT |
 | **D5** | Encryption (opt-in) | D2 | E2E encrypt-to-pubkey → decrypt; `key_required`/`key_mismatch` codes fire |
 | **Later (v2+)** | macOS producer (mbair), Linux producer (plinux), Android, plugin registry, MCP server, Clearbit/favicon, WS adapter | — | per roadmap |
+
+> **D3 is being built observability-first:** standardized `tracing` logging
+> (done), producer `/health` (done), then consumer composite health +
+> auto-reconnect, before the GUI slices (app-as-consumer, producers/apps/filters
+> settings, history view, log viewer, import/export, theming) and Focuses.
+
+> **Build-infra relocation is post-RC1 (Windows).** Containerizing the build and
+> moving it off the dev laptop onto the k3s/Kubernetes cluster (in containers or
+> VMs) is a **D4-era** task that happens *after* the Windows app reaches a
+> release candidate — it does not gate the Windows product. The eventual test
+> matrix is ≥5 producers and ≥6 consumers (macOS/iOS, Windows, KDE, GNOME,
+> Docker, RSS, MQTT, HTTP).
 
 ## D0 task breakdown
 
