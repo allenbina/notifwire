@@ -1,20 +1,87 @@
 //! notifwire Tauri app — backend entry point.
 //!
-//! Wires the consumer pipeline (reconnecting SSE subscriber) into the Tauri
-//! shell so the app can:
-//!   - Connect to a producer URL via the `connect` command
-//!   - Show WinRT toasts for each received notification
-//!   - Emit a `notification` event to the frontend window
-//!   - Report live connection health via `get_health`
+//! Slice 3B: persistent producers list.
+//!
+//! - Loads `config.json` from `app_config_dir` on startup.
+//! - Auto-connects all enabled producers.
+//! - Exposes Tauri commands for CRUD on the producer list.
+//! - `AppState` holds a per-URL map of (JoinHandle, StatusHandle).
 
-use notifwire_consumer::{consumer_health, Pipeline, ReconnectPolicy, StatusHandle};
+use notifwire_consumer::{Pipeline, ReconnectPolicy, StatusHandle};
 use notifwire_consumer_win::WindowsToastSink;
-use notifwire_core::{
-    ConsumerHealth, DisplayError, Notification, NotificationSink, Rules, SelfChecks,
+use notifwire_core::{DisplayError, Notification, NotificationSink, ProducerStatus, Rules};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
 };
-use serde::Serialize;
-use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+// ---------------------------------------------------------------------------
+// Config schema
+// ---------------------------------------------------------------------------
+
+/// One configured producer (persisted to `config.json`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProducerEntry {
+    pub url: String,
+    /// Optional friendly display name shown in the UI.
+    pub label: Option<String>,
+    pub enabled: bool,
+}
+
+/// Root of `config.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AppConfig {
+    producers: Vec<ProducerEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Config I/O helpers
+// ---------------------------------------------------------------------------
+
+fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|d| d.join("config.json"))
+        .map_err(|e| format!("could not resolve app_config_dir: {e}"))
+}
+
+fn load_config(app: &AppHandle) -> Vec<ProducerEntry> {
+    let path = match config_path(app) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("config path error: {e}");
+            return vec![];
+        }
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str::<AppConfig>(&text)
+            .map(|c| c.producers)
+            .unwrap_or_else(|e| {
+                log::warn!("config parse error (starting fresh): {e}");
+                vec![]
+            }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(e) => {
+            log::warn!("config read error: {e}");
+            vec![]
+        }
+    }
+}
+
+fn save_config(app: &AppHandle, producers: &[ProducerEntry]) -> Result<(), String> {
+    let path = config_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create config dir failed: {e}"))?;
+    }
+    let cfg = AppConfig {
+        producers: producers.to_vec(),
+    };
+    let text =
+        serde_json::to_string_pretty(&cfg).map_err(|e| format!("config serialize failed: {e}"))?;
+    std::fs::write(&path, text).map_err(|e| format!("config write failed: {e}"))
+}
 
 // ---------------------------------------------------------------------------
 // TauriSink
@@ -33,9 +100,6 @@ struct NotificationPayload {
 /// A [`NotificationSink`] that:
 /// 1. Fires a WinRT toast via [`WindowsToastSink`].
 /// 2. Emits a `notification` Tauri event to all frontend windows.
-///
-/// `WindowsToastSink` is `Send` but not `Sync`, so we gate it behind a
-/// `Mutex` so the struct can be `Send + Sync` (required by `AppHandle`).
 struct TauriSink {
     toast: Mutex<WindowsToastSink>,
     app: AppHandle,
@@ -49,7 +113,6 @@ impl std::fmt::Debug for TauriSink {
 
 impl NotificationSink for TauriSink {
     fn show(&self, n: &Notification) -> Result<(), DisplayError> {
-        // Best-effort toast: log if it fails but don't abort the pipeline.
         if let Err(e) = self.toast.lock().expect("toast mutex poisoned").show(n) {
             log::warn!("WinRT toast failed: {e}");
         }
@@ -81,13 +144,17 @@ impl NotificationSink for TauriSink {
 // AppState
 // ---------------------------------------------------------------------------
 
+/// Per-connection live data.
+struct Connection {
+    handle: tauri::async_runtime::JoinHandle<()>,
+    status: StatusHandle,
+}
+
 /// Managed state shared across Tauri commands.
+/// Keyed by producer URL.
+#[derive(Default)]
 struct AppState {
-    /// Handle to the currently-running consumer task, if any.
-    task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    /// Status of the current producer connection (updated by the run loop).
-    /// `None` when not connected.
-    status: Mutex<Option<StatusHandle>>,
+    connections: Mutex<HashMap<String, Connection>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -96,31 +163,16 @@ impl std::fmt::Debug for AppState {
     }
 }
 
-impl AppState {
-    fn new() -> Self {
-        Self {
-            task: Mutex::new(None),
-            status: Mutex::new(None),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Tauri commands
+// Internal connect / disconnect helpers
 // ---------------------------------------------------------------------------
 
-/// Connect to a producer.  Aborts any existing task, then starts a new
-/// reconnecting consumer loop in the background.
-#[tauri::command]
-fn connect(
-    app: AppHandle,
-    state: State<Arc<AppState>>,
-    producer_url: String,
-) -> Result<(), String> {
-    // Abort any existing task first.
-    abort_existing(&state);
+/// Start a consumer task for `url`, replacing any existing one.
+/// Returns an error string if the toast sink can't be initialised.
+fn connect_one(app: &AppHandle, state: &Arc<AppState>, url: &str) -> Result<(), String> {
+    // Abort any existing task for this URL.
+    disconnect_one(state, url);
 
-    // Build the toast sink; surface init errors to the UI immediately.
     let toast = WindowsToastSink::new("com.notifwire.app", "notifwire")
         .map_err(|e| format!("toast sink init failed: {e}"))?;
 
@@ -129,87 +181,146 @@ fn connect(
         app: app.clone(),
     };
 
-    let pipeline = Pipeline::new(
-        Rules::default(),
-        5_000, // 5 s dedup window
-        None,  // no history for now
-        Box::new(sink),
-    );
-
-    let status = StatusHandle::new(&producer_url);
-
-    // Store the status handle so get_health can read it.
-    *state.status.lock().expect("status mutex poisoned") = Some(status.clone());
-
-    let url = producer_url.clone();
-    let state_clone = Arc::clone(&state);
+    let pipeline = Pipeline::new(Rules::default(), 5_000, None, Box::new(sink));
+    let status = StatusHandle::new(url);
+    let url_owned = url.to_owned();
+    let state_clone = Arc::clone(state);
+    let status_clone = status.clone();
 
     let handle = tauri::async_runtime::spawn(async move {
-        let mut pipeline = pipeline;
         let result = notifwire_consumer::run_with_reconnect(
-            &url,
-            0,    // since: start at beginning / live
-            true, // live: only-new mode
-            &mut pipeline,
+            &url_owned,
+            0,
+            true,
+            &mut { pipeline },
             &ReconnectPolicy::default(),
-            &status,
+            &status_clone,
         )
         .await;
 
         if let Err(e) = result {
-            log::error!("consumer loop exited with error: {e}");
+            log::error!("consumer loop ({url_owned}) exited with error: {e}");
         }
 
-        // Clear the task slot when the loop exits.
-        *state_clone.task.lock().expect("task mutex poisoned") = None;
+        // Remove ourselves from the map when the loop exits.
+        state_clone
+            .connections
+            .lock()
+            .expect("connections mutex poisoned")
+            .remove(&url_owned);
     });
 
-    *state.task.lock().expect("task mutex poisoned") = Some(handle);
+    state
+        .connections
+        .lock()
+        .expect("connections mutex poisoned")
+        .insert(url.to_owned(), Connection { handle, status });
+
     Ok(())
 }
 
-/// Disconnect from the current producer.
-#[tauri::command]
-fn disconnect(state: State<Arc<AppState>>) -> Result<(), String> {
-    abort_existing(&state);
-    *state.status.lock().expect("status mutex poisoned") = None;
-    Ok(())
+/// Abort and remove the task for `url` (no-op if not connected).
+fn disconnect_one(state: &Arc<AppState>, url: &str) {
+    if let Some(conn) = state
+        .connections
+        .lock()
+        .expect("connections mutex poisoned")
+        .remove(url)
+    {
+        conn.handle.abort();
+    }
 }
 
-/// Return the current consumer health (connection state + producer status).
-#[tauri::command]
-fn get_health(state: State<Arc<AppState>>) -> Result<ConsumerHealth, String> {
-    let status_guard = state.status.lock().expect("status mutex poisoned");
-    match &*status_guard {
-        None => {
-            // Not connected: return a trivially healthy consumer with no producers.
-            let self_checks = SelfChecks {
-                history_ok: true,
-                pipeline_alive: false,
-                detail: None,
-            };
-            Ok(consumer_health(self_checks, &[]))
-        }
-        Some(handle) => {
-            let task_alive = state.task.lock().expect("task mutex poisoned").is_some();
-            let self_checks = SelfChecks {
-                history_ok: true,
-                pipeline_alive: task_alive,
-                detail: None,
-            };
-            Ok(consumer_health(self_checks, std::slice::from_ref(handle)))
+/// Connect all enabled producers from config at startup.
+fn connect_all(app: &AppHandle, state: &Arc<AppState>) {
+    for entry in load_config(app) {
+        if entry.enabled {
+            if let Err(e) = connect_one(app, state, &entry.url) {
+                log::warn!("startup connect failed for {}: {e}", entry.url);
+            }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Tauri commands
 // ---------------------------------------------------------------------------
 
-fn abort_existing(state: &State<Arc<AppState>>) {
-    if let Some(handle) = state.task.lock().expect("task mutex poisoned").take() {
-        handle.abort();
+/// Return all configured producers (from config file).
+#[tauri::command]
+fn get_producers(app: AppHandle) -> Vec<ProducerEntry> {
+    load_config(&app)
+}
+
+/// Append a new producer, save config, and connect if enabled.
+#[tauri::command]
+fn add_producer(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    url: String,
+    label: Option<String>,
+) -> Result<(), String> {
+    let mut producers = load_config(&app);
+    let url = url.trim().to_owned();
+    if url.is_empty() {
+        return Err("URL must not be empty".into());
     }
+    if producers.iter().any(|p| p.url == url) {
+        return Err(format!("producer '{url}' already exists"));
+    }
+    producers.push(ProducerEntry {
+        url: url.clone(),
+        label,
+        enabled: true,
+    });
+    save_config(&app, &producers)?;
+    connect_one(&app, &state, &url)?;
+    Ok(())
+}
+
+/// Remove a producer, save config, and disconnect it.
+#[tauri::command]
+fn remove_producer(app: AppHandle, state: State<Arc<AppState>>, url: String) -> Result<(), String> {
+    let mut producers = load_config(&app);
+    producers.retain(|p| p.url != url);
+    save_config(&app, &producers)?;
+    disconnect_one(&state, &url);
+    Ok(())
+}
+
+/// Enable or disable a producer, save config, and connect/disconnect.
+#[tauri::command]
+fn set_producer_enabled(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    url: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut producers = load_config(&app);
+    let entry = producers
+        .iter_mut()
+        .find(|p| p.url == url)
+        .ok_or_else(|| format!("producer '{url}' not found"))?;
+    entry.enabled = enabled;
+    save_config(&app, &producers)?;
+    if enabled {
+        connect_one(&app, &state, &url)?;
+    } else {
+        disconnect_one(&state, &url);
+    }
+    Ok(())
+}
+
+/// Return the live status of every active connection.
+/// The `url` field lets the frontend match entries back to config rows.
+#[tauri::command]
+fn get_health(state: State<Arc<AppState>>) -> Result<Vec<ProducerStatus>, String> {
+    let connections = state
+        .connections
+        .lock()
+        .expect("connections mutex poisoned");
+    let statuses = connections.values().map(|c| c.status.get()).collect();
+    Ok(statuses)
 }
 
 // ---------------------------------------------------------------------------
@@ -218,11 +329,12 @@ fn abort_existing(state: &State<Arc<AppState>>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let state = Arc::new(AppState::new());
+    let state: Arc<AppState> = Arc::new(AppState::default());
+    let state_for_setup = Arc::clone(&state);
 
     tauri::Builder::default()
         .manage(state)
-        .setup(|app| {
+        .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -230,9 +342,17 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // Auto-connect all enabled producers from saved config.
+            connect_all(app.handle(), &state_for_setup);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![connect, disconnect, get_health])
+        .invoke_handler(tauri::generate_handler![
+            get_producers,
+            add_producer,
+            remove_producer,
+            set_producer_enabled,
+            get_health,
+        ])
         .run(tauri::generate_context!())
         .expect("notifwire app failed to start");
 }
