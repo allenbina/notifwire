@@ -85,6 +85,21 @@ impl Outbox {
         self.next_seq - 1
     }
 
+    /// Number of notifications currently retained.
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// True if nothing is currently retained.
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// The retention capacity (max notifications kept for catch-up).
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     /// The oldest cursor still retained, or `None` if the buffer is empty.
     pub fn oldest_retained(&self) -> Option<Cursor> {
         self.buf.front().map(|s| s.seq)

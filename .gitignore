@@ -8,6 +8,9 @@
 *.swp
 Thumbs.db
 
+# local Claude Code settings (per-user permissions; never commit)
+.claude/settings.local.json
+
 # Rust / Tauri
 /target
 **/target

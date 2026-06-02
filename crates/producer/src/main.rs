@@ -15,7 +15,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use notifwire_core::NotificationSource;
+use notifwire_core::{CaptureHealth, NotificationSource};
 use notifwire_producer_win::WindowsNotificationSource;
 use notifwire_transport::{MeshProducer, SseServer};
 use std::path::PathBuf;
@@ -89,9 +89,19 @@ async fn main() -> Result<()> {
     }
 
     if cli.capture_windows {
-        // Pump captured Windows toasts into this node's outbox/stream.
-        let mut source = WindowsNotificationSource::start(cli.node_id.clone())
-            .map_err(|e| anyhow::anyhow!("starting Windows capture: {e}"))?;
+        // Pump captured Windows toasts into this node's outbox/stream. The
+        // capture handle reflects the subsystem's state in what /health reports.
+        let health = server.capture_health();
+        let mut source = match WindowsNotificationSource::start(cli.node_id.clone()) {
+            Ok(source) => {
+                health.set(CaptureHealth::running());
+                source
+            }
+            Err(e) => {
+                health.set(CaptureHealth::stopped(None, e.to_string()));
+                return Err(anyhow::anyhow!("starting Windows capture: {e}"));
+            }
+        };
         let producer = server.producer();
         tracing::info!(
             via = source.name(),
@@ -104,9 +114,17 @@ async fn main() -> Result<()> {
                     Ok(Some(n)) => {
                         producer.publish(n);
                     }
-                    Ok(None) => break, // capture source ended (e.g. access not granted)
+                    Ok(None) => {
+                        // Source ended — most commonly notification access not granted.
+                        health.set(CaptureHealth::stopped(
+                            Some(false),
+                            "capture source ended (notification access not granted?)",
+                        ));
+                        break;
+                    }
                     Err(e) => {
                         tracing::error!(error = %e, "capture error; stopping capture");
+                        health.set(CaptureHealth::stopped(None, e.to_string()));
                         break;
                     }
                 }

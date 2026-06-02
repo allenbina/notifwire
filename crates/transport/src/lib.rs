@@ -18,7 +18,7 @@ pub use error::TransportError;
 pub use mesh::{EventStream, MeshConsumer, MeshProducer};
 pub use outbox::{CatchUp, Cursor, Outbox, Sequenced};
 pub use persist::{load_outbox, save_outbox};
-pub use sse::{SseClient, SseProducer, SseServer};
+pub use sse::{CaptureHealthHandle, SseClient, SseProducer, SseServer};
 
 /// Crate version string.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

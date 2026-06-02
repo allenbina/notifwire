@@ -22,12 +22,13 @@ use axum::{
     Router,
 };
 use futures::{Stream, StreamExt};
-use notifwire_core::Notification;
+use notifwire_core::{CaptureHealth, Notification, ProducerHealth};
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::broadcast;
 
 const BROADCAST_CAPACITY: usize = 1024;
@@ -39,6 +40,12 @@ struct ServerState {
     /// When set, the outbox is snapshotted here after every publish so it
     /// survives a restart (D1-7).
     persist_path: Option<PathBuf>,
+    /// When the server started, for the `/health` uptime field.
+    started: Instant,
+    /// Capture subsystem status, reported at `/health`. Transport doesn't run
+    /// capture itself (that's the producer binary); the binary updates this via
+    /// [`SseServer::capture_health`].
+    capture: Arc<Mutex<CaptureHealth>>,
 }
 
 impl ServerState {
@@ -81,6 +88,18 @@ pub struct SseProducer {
     state: ServerState,
 }
 
+/// A cloneable handle to update the capture-subsystem status surfaced by
+/// `/health`. Obtain one from [`SseServer::capture_health`].
+#[derive(Clone, Debug)]
+pub struct CaptureHealthHandle(Arc<Mutex<CaptureHealth>>);
+
+impl CaptureHealthHandle {
+    /// Overwrite the reported capture status.
+    pub fn set(&self, health: CaptureHealth) {
+        *self.0.lock().expect("capture health mutex poisoned") = health;
+    }
+}
+
 impl SseServer {
     /// Create a server whose outbox retains at most `capacity` recent events,
     /// held in memory only (lost on restart).
@@ -91,6 +110,8 @@ impl SseServer {
                 outbox: Arc::new(Mutex::new(Outbox::new(capacity))),
                 tx,
                 persist_path: None,
+                started: Instant::now(),
+                capture: Arc::new(Mutex::new(CaptureHealth::disabled())),
             },
         }
     }
@@ -107,6 +128,8 @@ impl SseServer {
                 outbox: Arc::new(Mutex::new(outbox)),
                 tx,
                 persist_path: Some(path),
+                started: Instant::now(),
+                capture: Arc::new(Mutex::new(CaptureHealth::disabled())),
             },
         }
     }
@@ -118,6 +141,13 @@ impl SseServer {
         }
     }
 
+    /// A cloneable handle for reporting the capture subsystem's status into
+    /// what `/health` serves. The producer binary owns the OS capture worker, so
+    /// it (not transport) updates this as capture starts, stops, or errors.
+    pub fn capture_health(&self) -> CaptureHealthHandle {
+        CaptureHealthHandle(self.state.capture.clone())
+    }
+
     /// The axum router: `GET /events` (subscribe) and `POST /ingest` (local
     /// injection). For D0 both share one listener; `/ingest` is meant to be
     /// bound to localhost only — splitting it onto its own loopback listener
@@ -126,6 +156,7 @@ impl SseServer {
         Router::new()
             .route("/events", get(events_handler))
             .route("/ingest", post(ingest_handler))
+            .route("/health", get(health_handler))
             .with_state(self.state.clone())
     }
 
@@ -222,6 +253,29 @@ async fn ingest_handler(
 ) -> impl IntoResponse {
     let seq = state.publish(notification);
     Json(serde_json::json!({ "seq": seq }))
+}
+
+/// `GET /health` — the producer's self-report. A consumer polls this to tell a
+/// reachable-but-degraded producer (200 with `status: "degraded"`) apart from an
+/// unreachable one (no response at all).
+async fn health_handler(State(state): State<ServerState>) -> impl IntoResponse {
+    let (latest_cursor, outbox_len, outbox_capacity) = {
+        let ob = state.outbox.lock().expect("outbox mutex poisoned");
+        (ob.latest(), ob.len(), ob.capacity())
+    };
+    let capture = state
+        .capture
+        .lock()
+        .expect("capture health mutex poisoned")
+        .clone();
+    Json(ProducerHealth {
+        status: capture.status(),
+        uptime_secs: state.started.elapsed().as_secs(),
+        latest_cursor,
+        outbox_len,
+        outbox_capacity,
+        capture,
+    })
 }
 
 /// An SSE consumer that dials a producer's `/events` endpoint.
@@ -416,6 +470,49 @@ mod tests {
         let client = SseClient::new(base);
         let mut stream = client.subscribe(0).await.unwrap();
         assert_eq!(next_seq(&mut stream).await, 1);
+    }
+
+    #[tokio::test]
+    async fn health_reports_outbox_and_capture_state() {
+        use notifwire_core::{CaptureHealth, HealthStatus, ProducerHealth};
+
+        async fn fetch_health(base: &str) -> ProducerHealth {
+            let body = reqwest::Client::new()
+                .get(format!("{base}/health"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            serde_json::from_str(&body).unwrap()
+        }
+
+        let server = SseServer::new(100);
+        let producer = server.producer();
+        let capture = server.capture_health();
+        let (addr, serve) = server.bind("127.0.0.1:0").await.unwrap();
+        tokio::spawn(serve);
+        let base = format!("http://{addr}");
+
+        // Fresh node, capture not enabled → ok, empty outbox.
+        let h = fetch_health(&base).await;
+        assert_eq!(h.status, HealthStatus::Ok);
+        assert_eq!(h.latest_cursor, 0);
+        assert_eq!(h.outbox_len, 0);
+        assert_eq!(h.outbox_capacity, 100);
+        assert!(!h.capture.enabled);
+
+        // Publish two and mark capture degraded; both should be reflected.
+        producer.publish(note("a"));
+        producer.publish(note("b"));
+        capture.set(CaptureHealth::stopped(Some(false), "access not granted"));
+
+        let h = fetch_health(&base).await;
+        assert_eq!(h.latest_cursor, 2);
+        assert_eq!(h.outbox_len, 2);
+        assert_eq!(h.status, HealthStatus::Degraded);
+        assert!(h.capture.enabled && !h.capture.running);
     }
 
     #[tokio::test]

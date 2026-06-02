@@ -116,6 +116,22 @@ Program **output** stays on stdout — the consumer's notification lines and
 `notifwire-send`'s `sent seq=…` confirmation are data, not logs. Status,
 warnings, and errors are diagnostics and go through `tracing`.
 
+### Producer health endpoint
+
+A running producer self-reports at `GET /health` — a cheap reachability/status
+probe (the consumer's health dashboard polls it):
+
+```
+curl http://127.0.0.1:8787/health
+# {"status":"ok","uptime_secs":12,"latest_cursor":3,"outbox_len":3,
+#  "outbox_capacity":1000,"capture":{"enabled":true,"running":true,...}}
+```
+
+`status` is `ok` / `degraded` / `unhealthy` (the green/yellow/red dot). A
+reachable-but-degraded producer answers `200` with `status:"degraded"` (e.g.
+capture enabled but notification access not granted), which a consumer tells
+apart from an unreachable one (no response at all).
+
 ## Test
 
 Strategy: most logic is OS-independent and unit-tested; **OS capture is isolated

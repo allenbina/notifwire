@@ -8,6 +8,7 @@
 mod capture;
 mod config;
 mod dedup;
+mod health;
 mod icon;
 mod notification;
 mod rules;
@@ -16,6 +17,7 @@ mod sink;
 pub use capture::{CaptureError, NotificationSource, SyntheticSource};
 pub use config::{Config, Freshness};
 pub use dedup::Deduper;
+pub use health::{CaptureHealth, HealthStatus, ProducerHealth};
 pub use icon::{classify, icon_chain, IconRef, IconStep};
 pub use notification::{Notification, Priority, SourcePlatform};
 pub use rules::{DefaultMode, Filter, FilterAction, MatchField, Rules, Verdict};
