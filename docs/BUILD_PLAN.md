@@ -56,6 +56,13 @@ repo.
 > release candidate — it does not gate the Windows product. The eventual test
 > matrix is ≥5 producers and ≥6 consumers (macOS/iOS, Windows, KDE, GNOME,
 > Docker, RSS, MQTT, HTTP).
+>
+> **Update (in progress now):** the cluster build infra is being stood up early —
+> ahead of RC1 — to de-risk the Linux producer/consumer legs (libvirt on
+> thinnode1, Ubuntu GNOME + Kubuntu KDE VMs, Gitea act_runner). The roadmap
+> ordering above still holds for the Windows product; this is parallel
+> groundwork, not a reprioritization. Live status:
+> `server-iac/docs/notifwire-build-infra-status.md`.
 
 ## D0 task breakdown
 
